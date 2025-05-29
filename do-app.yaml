@@ -1,0 +1,21 @@
+name: discord-music-bot
+services:
+- name: bot
+  github:
+    branch: main
+    deploy_on_push: true
+    repo: yourusername/discordbot
+  build_command: pip install -r requirements.txt
+  run_command: python bot.py
+  http_port: 8080
+  instance_count: 1
+  instance_size_slug: basic-xxs
+  envs:
+  - key: DISCORD_TOKEN
+    scope: RUN_AND_BUILD_TIME
+    type: SECRET
+    value: ${DISCORD_TOKEN}
+  - key: PYTHONUNBUFFERED
+    scope: RUN_AND_BUILD_TIME
+    type: SECRET
+    value: "1" 
