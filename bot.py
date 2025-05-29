@@ -377,20 +377,75 @@ async def play_command(interaction: discord.Interaction, query: str):
         player = get_player(interaction.guild)
         ctx = await commands.Context.from_interaction(interaction)
 
-        ydl_opts = {'format': 'bestaudio', 'quiet': True, 'extract_flat': 'in_playlist', 'default_search': 'ytsearch'}
+        # Enhanced yt-dlp options for better search results
+        ydl_opts = {
+            'format': 'bestaudio/best',  # Prefer best audio quality
+            'quiet': True,
+            'extract_flat': 'in_playlist',
+            'default_search': 'ytsearch',
+            'noplaylist': True,  # Don't extract playlists when searching
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            # Add search filters for better results
+            'match_filter': lambda info: (
+                # Filter out videos that are too long (likely not songs)
+                info.get('duration', 0) < 3600 and
+                # Filter out videos with low view counts (likely not popular songs)
+                info.get('view_count', 0) > 1000 and
+                # Filter out videos that are likely not music
+                not any(x in info.get('title', '').lower() for x in ['podcast', 'interview', 'live stream', 'gaming'])
+            ),
+            # Add search parameters
+            'search_args': {
+                'sort_by': 'relevance',  # Sort by relevance
+                'type': 'video',  # Only search for videos
+                'videoCategoryId': '10',  # Music category
+            }
+        }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
+            try:
+                # First try to extract as a direct URL
+                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
+            except:
+                # If that fails, try searching with enhanced parameters
+                search_query = f"{query} music audio"  # Add music-related terms to improve search
+                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(search_query, download=False))
 
-        if 'entries' in info: # It's a playlist or search result
+        if 'entries' in info:  # It's a playlist or search result
             entries = info['entries']
-            num_tracks = len(entries)
-            for entry in entries:
-                player.queue.append(entry['url'])
-            await interaction.followup.send(f"🎶 Added **{num_tracks}** tracks to the queue.", ephemeral=False)
-        else: # It's a single video
+            # Filter out None entries and sort by relevance
+            entries = [e for e in entries if e is not None]
+            entries.sort(key=lambda x: (
+                x.get('view_count', 0),  # Sort by view count
+                x.get('like_count', 0),  # Then by likes
+                x.get('duration', 0)     # Then by duration (prefer shorter videos)
+            ), reverse=True)
+            
+            # Take the best result
+            if entries:
+                best_entry = entries[0]
+                player.queue.append(best_entry['webpage_url'])
+                await interaction.followup.send(
+                    f"🎵 Added **[{best_entry['title']}]({best_entry['webpage_url']})** to the queue.\n"
+                    f"👁️ {best_entry.get('view_count', 0):,} views • "
+                    f"⏱️ {format_time(best_entry.get('duration', 0))}",
+                    ephemeral=False
+                )
+            else:
+                await interaction.followup.send("❌ No suitable results found. Try being more specific.", ephemeral=True)
+                return
+        else:  # It's a single video
             player.queue.append(info['webpage_url'])
-            await interaction.followup.send(f"🎵 Added **[{info['title']}]({info['webpage_url']})** to the queue.", ephemeral=False)
+            await interaction.followup.send(
+                f"🎵 Added **[{info['title']}]({info['webpage_url']})** to the queue.\n"
+                f"👁️ {info.get('view_count', 0):,} views • "
+                f"⏱️ {format_time(info.get('duration', 0))}",
+                ephemeral=False
+            )
 
         if not interaction.guild.voice_client or not interaction.guild.voice_client.is_playing():
             await play_next(ctx)
@@ -400,7 +455,6 @@ async def play_command(interaction: discord.Interaction, query: str):
         try:
             await interaction.followup.send(f"❌ Error processing your request: {str(e)}", ephemeral=True)
         except:
-            # If we can't send the error message, at least log it
             print(f"Failed to send error message to user: {e}")
 
 # --- Bot Events ---
