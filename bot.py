@@ -153,8 +153,10 @@ def create_progress_bar(progress: float, duration: int) -> str:
     
     return f"`{bar}`"
 
-def format_time(seconds: int) -> str:
+def format_time(seconds: float) -> str:
     """Formats seconds into MM:SS or HH:MM:SS format with leading zeros."""
+    # Convert float to int for formatting
+    seconds = int(seconds)
     if seconds < 3600:
         return f"{seconds // 60:02d}:{seconds % 60:02d}"
     return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
@@ -289,25 +291,83 @@ async def play_track(ctx: commands.Context, url: str):
             await ctx.guild.change_voice_state(channel=voice_client.channel, self_deaf=True)
         
         # --- yt-dlp and FFmpeg setup ---
-        ydl_opts = {'format': 'bestaudio/best', 'quiet': True}
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': False,
+            'extract_flat': False,  # Ensure we get full video info
+            'noplaylist': True,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        }
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
             'options': '-vn'
         }
 
+        print(f"\n=== Processing track: {url} ===")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # First, get the video info
             info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-        
-        source = await discord.FFmpegOpusAudio.from_probe(info['url'], **ffmpeg_options)
+            print(f"Video info type: {type(info)}")
+            print(f"Video info keys: {info.keys() if isinstance(info, dict) else 'Not a dict'}")
+            
+            # Ensure we have the webpage_url
+            if 'webpage_url' not in info and 'url' in info:
+                # If we got a direct URL, try to extract the video ID and construct the webpage URL
+                if 'youtube.com' in url or 'youtu.be' in url:
+                    info['webpage_url'] = url
+                else:
+                    # For other URLs, try to get the original URL
+                    try:
+                        # Try to get the original URL from the video info
+                        if 'original_url' in info:
+                            info['webpage_url'] = info['original_url']
+                        elif 'id' in info:
+                            info['webpage_url'] = f"https://www.youtube.com/watch?v={info['id']}"
+                    except Exception as e:
+                        print(f"Error constructing webpage_url: {e}")
+                        info['webpage_url'] = url  # Fallback to original URL
+            
+            # Get the audio stream URL
+            if 'url' not in info:
+                print("No direct URL found, extracting format...")
+                formats = info.get('formats', [])
+                audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+                if audio_formats:
+                    best_audio = audio_formats[-1]  # Usually the last one is the best quality
+                    info['url'] = best_audio['url']
+                else:
+                    raise ValueError("No suitable audio format found")
+
+            print(f"Using webpage URL: {info.get('webpage_url', 'Not found')}")
+            print(f"Using audio URL: {info.get('url', 'Not found')[:100]}...")  # Print first 100 chars of URL
+            
+            # Validate required fields
+            required_fields = ['title', 'duration', 'webpage_url', 'url', 'thumbnail']
+            missing_fields = [field for field in required_fields if field not in info]
+            if missing_fields:
+                print(f"Warning: Missing fields in video info: {missing_fields}")
+                # Try to fill in missing fields
+                if 'duration' not in info:
+                    info['duration'] = 0
+                if 'thumbnail' not in info:
+                    info['thumbnail'] = None
+                if 'uploader' not in info:
+                    info['uploader'] = 'Unknown Artist'
+            
+            source = await discord.FFmpegOpusAudio.from_probe(info['url'], **ffmpeg_options)
 
         # --- Playback ---
-        player.current_track_url = url
+        player.current_track_url = info['webpage_url']  # Store the webpage URL, not the audio URL
         player.current_track_info = info
         player.start_time = get_current_time()
         player.last_update = None
         
-        if url not in player.playback_history:
-            player.playback_history.append(url)
+        if info['webpage_url'] not in player.playback_history:
+            player.playback_history.append(info['webpage_url'])
         
         def after_playing(error):
             if error:
@@ -327,16 +387,21 @@ async def play_track(ctx: commands.Context, url: str):
                 pass # Old message was already deleted
         
         player.player_message = await ctx.send(embed=embed, view=view)
+        print("Player message sent successfully")
         
         # Start progress update task
         bot.loop.create_task(update_progress(ctx, player))
 
     except yt_dlp.DownloadError as e:
+        print(f"Download error: {e}")
         await ctx.send(f"❌ Download error: {str(e)}")
     except discord.ClientException as e:
+        print(f"Voice connection issue: {e}")
         await ctx.send(f"❌ Voice connection issue: {str(e)}")
     except Exception as e:
         print(f"Error in play_track: {e}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         await ctx.send(f"❌ An error occurred: {e}")
 
 async def update_progress(ctx: commands.Context, player: GuildPlayer):
@@ -364,23 +429,117 @@ async def update_progress(ctx: commands.Context, player: GuildPlayer):
             break
 
 # --- Bot Commands ---
+class MessageHandler:
+    """Helper class to handle message state and sending."""
+    def __init__(self, interaction: discord.Interaction):
+        self.interaction = interaction
+        self.message = None
+        self.initialized = False
+        self.last_error = None
+        self.message_history = []
+
+    def _log_message(self, action: str, status: str, details: str = ""):
+        """Log message handling actions for debugging."""
+        log_entry = f"[MessageHandler] {action}: {status} {details}".strip()
+        self.message_history.append(log_entry)
+        print(log_entry)
+
+    async def initialize(self):
+        """Initialize the message handler, either with defer or new message."""
+        try:
+            self._log_message("Initialize", "Attempting to defer response")
+            await self.interaction.response.defer(ephemeral=False)
+            self.initialized = True
+            self._log_message("Initialize", "Success", "Response deferred")
+        except discord.NotFound as e:
+            self._log_message("Initialize", "Failed", f"Interaction expired: {str(e)}")
+            self.message = await self.interaction.channel.send("🔍 Searching for your song...")
+            self.initialized = True
+            self._log_message("Initialize", "Fallback", "Sent new message")
+        except Exception as e:
+            self.last_error = e
+            self._log_message("Initialize", "Error", f"Unexpected error: {str(e)}")
+            self.message = await self.interaction.channel.send("🔍 Searching for your song...")
+            self.initialized = True
+            self._log_message("Initialize", "Recovery", "Sent new message after error")
+
+    async def send(self, content: str, ephemeral: bool = False):
+        """Send or update a message with detailed error tracking."""
+        try:
+            if self.message:
+                self._log_message("Send", "Updating", "Existing message")
+                await self.message.edit(content=content)
+                self._log_message("Send", "Success", "Message updated")
+            elif self.initialized:
+                try:
+                    self._log_message("Send", "Attempting", "Followup send")
+                    await self.interaction.followup.send(content, ephemeral=ephemeral)
+                    self._log_message("Send", "Success", "Followup sent")
+                except discord.NotFound as e:
+                    self._log_message("Send", "Failed", f"Followup expired: {str(e)}")
+                    self.message = await self.interaction.channel.send(content)
+                    self._log_message("Send", "Fallback", "Sent new message")
+                except Exception as e:
+                    self.last_error = e
+                    self._log_message("Send", "Error", f"Followup error: {str(e)}")
+                    self.message = await self.interaction.channel.send(content)
+                    self._log_message("Send", "Recovery", "Sent new message after error")
+            else:
+                self._log_message("Send", "Initial", "First message")
+                self.message = await self.interaction.channel.send(content)
+                self.initialized = True
+                self._log_message("Send", "Success", "First message sent")
+        except Exception as e:
+            self.last_error = e
+            self._log_message("Send", "Error", f"Unexpected error: {str(e)}")
+            if not self.message:
+                try:
+                    self.message = await self.interaction.channel.send(content)
+                    self.initialized = True
+                    self._log_message("Send", "Recovery", "Sent new message after error")
+                except Exception as send_error:
+                    self._log_message("Send", "Critical", f"Failed to send message: {str(send_error)}")
+                    print(f"CRITICAL: Failed to send message after all attempts: {str(send_error)}")
+                    print(f"Original error: {str(e)}")
+                    print(f"Message history: {self.message_history}")
+
+    def get_debug_info(self) -> str:
+        """Get debug information about the message handler's state."""
+        return (
+            f"MessageHandler State:\n"
+            f"Initialized: {self.initialized}\n"
+            f"Has Message: {self.message is not None}\n"
+            f"Last Error: {str(self.last_error) if self.last_error else 'None'}\n"
+            f"Message History:\n" + "\n".join(self.message_history)
+        )
+
 @bot.tree.command(name="play", description="Play a song or playlist from YouTube")
 @app_commands.describe(query="A song name or URL (YouTube, Spotify, SoundCloud, etc.)")
 async def play_command(interaction: discord.Interaction, query: str):
+    # Create message handler
+    msg_handler = MessageHandler(interaction)
+    
     try:
-        # Defer the response immediately
-        await interaction.response.defer(ephemeral=False)
+        print("\n=== Starting Play Command ===")
+        print(f"Query: {query}")
+        print(f"User: {interaction.user}")
+        print(f"Channel: {interaction.channel}")
+        
+        # Initialize message handler
+        await msg_handler.initialize()
         
         if not interaction.user.voice:
-            return await interaction.followup.send("❗ You must be in a voice channel first!", ephemeral=True)
+            await msg_handler.send("❗ You must be in a voice channel first!")
+            return
 
         player = get_player(interaction.guild)
         ctx = await commands.Context.from_interaction(interaction)
+        print(f"Got player for guild {interaction.guild.id}")
 
         # Enhanced yt-dlp options for better search results
         ydl_opts = {
             'format': 'bestaudio/best',  # Prefer best audio quality
-            'quiet': True,
+            'quiet': False,  # Enable logging
             'extract_flat': 'in_playlist',
             'default_search': 'ytsearch',
             'noplaylist': True,  # Don't extract playlists when searching
@@ -389,73 +548,182 @@ async def play_command(interaction: discord.Interaction, query: str):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            # Add search filters for better results
+            # Minimal search filters - only filter out extremely long videos
             'match_filter': lambda info: (
-                # Filter out videos that are too long (likely not songs)
-                info.get('duration', 0) < 3600 and
-                # Filter out videos with low view counts (likely not popular songs)
-                info.get('view_count', 0) > 1000 and
-                # Filter out videos that are likely not music
-                not any(x in info.get('title', '').lower() for x in ['podcast', 'interview', 'live stream', 'gaming'])
+                # Only filter out extremely long videos (over 4 hours)
+                info.get('duration', 0) < 14400 and
+                # Keep all other videos
+                True
             ),
             # Add search parameters
             'search_args': {
                 'sort_by': 'relevance',  # Sort by relevance
                 'type': 'video',  # Only search for videos
-                'videoCategoryId': '10',  # Music category
             }
         }
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        async def try_extract_info(query: str, is_search: bool = False) -> dict:
+            """Helper function to try extracting video info with better error handling."""
             try:
-                # First try to extract as a direct URL
-                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
-            except:
-                # If that fails, try searching with enhanced parameters
-                search_query = f"{query} music audio"  # Add music-related terms to improve search
-                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(search_query, download=False))
+                print(f"\n=== Starting search for: {query} ===")
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    print("Created yt-dlp instance")
+                    try:
+                        info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
+                        print(f"Raw search results type: {type(info)}")
+                        print(f"Raw search results keys: {info.keys() if isinstance(info, dict) else 'Not a dict'}")
+                    except Exception as e:
+                        print(f"Error during yt-dlp extraction: {str(e)}")
+                        print(f"Error type: {type(e)}")
+                        import traceback
+                        print(f"Traceback: {traceback.format_exc()}")
+                        raise
+                    
+                    # Validate the info dictionary
+                    if not info:
+                        print("No info returned from yt-dlp")
+                        raise ValueError("No video information found")
+                    
+                    # For search results, validate entries
+                    if 'entries' in info:
+                        print(f"Found {len(info['entries'])} entries in search results")
+                        if not info['entries']:
+                            print("Empty entries list")
+                            raise ValueError("No search results found")
+                        
+                        # Filter and validate entries with detailed debug info
+                        valid_entries = []
+                        for i, entry in enumerate(info['entries']):
+                            print(f"\nProcessing entry {i + 1}:")
+                            print(f"Entry type: {type(entry)}")
+                            print(f"Entry keys: {entry.keys() if isinstance(entry, dict) else 'Not a dict'}")
+                            print(f"Title: {entry.get('title', 'NO TITLE')}")
+                            print(f"Views: {entry.get('view_count', 'NO VIEWS')}")
+                            print(f"Duration: {entry.get('duration', 'NO DURATION')}")
+                            print(f"URL: {entry.get('url', 'NO URL')}")
+                            
+                            if entry and isinstance(entry, dict):
+                                # For search results, use 'url' instead of 'webpage_url'
+                                if 'url' in entry and 'title' in entry:
+                                    # Add webpage_url field for consistency
+                                    entry['webpage_url'] = entry['url']
+                                    valid_entries.append(entry)
+                                    print("✓ Entry is valid")
+                                else:
+                                    print("✗ Entry filtered out - missing required fields")
+                                    print(f"Missing fields: {[k for k in ['url', 'title'] if k not in entry]}")
+                            else:
+                                print(f"✗ Entry filtered out - invalid type: {type(entry)}")
+                        
+                        print(f"\nFound {len(valid_entries)} valid entries after filtering")
+                        if not valid_entries:
+                            print("No valid entries found after filtering")
+                            raise ValueError("No valid search results found")
+                        info['entries'] = valid_entries
+                    # For single videos, validate required fields
+                    elif not all(key in info for key in ['url', 'title']):
+                        print(f"Single video missing required fields: {info}")
+                        raise ValueError("Incomplete video information")
+                    else:
+                        # Add webpage_url field for consistency
+                        info['webpage_url'] = info['url']
+                    
+                    return info
+            except Exception as e:
+                print(f"Error in try_extract_info: {str(e)}")
+                print(f"Error type: {type(e)}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
+                raise ValueError(f"Error extracting video info: {str(e)}")
 
-        if 'entries' in info:  # It's a playlist or search result
+        # Try different search strategies with debug logging
+        info = None
+        search_strategies = [
+            query,  # Try original query first
+            f"{query} music",  # Try with music
+            f"{query} audio",  # Try with audio
+            f"{query} official",  # Try with official
+            f"{query} lyrics"  # Try with lyrics as last resort
+        ]
+        
+        # Update the search strategies to use our new message handler
+        for search_query in search_strategies:
+            try:
+                print(f"\n=== Trying search strategy: {search_query} ===")
+                info = await try_extract_info(search_query, is_search=True)
+                if info and ('entries' in info and info['entries'] or 'webpage_url' in info):
+                    print(f"✓ Found valid result with strategy: {search_query}")
+                    break
+            except ValueError as e:
+                print(f"✗ Strategy {search_query} failed: {str(e)}")
+                if search_query == search_strategies[-1]:
+                    await msg_handler.send(f"❌ {str(e)}")
+                    return
+                continue
+
+        print("\n=== Processing search results ===")
+        if 'entries' in info:
+            print("Processing search results as entries")
             entries = info['entries']
-            # Filter out None entries and sort by relevance
-            entries = [e for e in entries if e is not None]
             entries.sort(key=lambda x: (
-                x.get('view_count', 0),  # Sort by view count
-                x.get('like_count', 0),  # Then by likes
-                x.get('duration', 0)     # Then by duration (prefer shorter videos)
+                x.get('view_count', 0),
+                x.get('like_count', 0),
+                x.get('duration', 0)
             ), reverse=True)
             
-            # Take the best result
-            if entries:
-                best_entry = entries[0]
-                player.queue.append(best_entry['webpage_url'])
-                await interaction.followup.send(
-                    f"🎵 Added **[{best_entry['title']}]({best_entry['webpage_url']})** to the queue.\n"
-                    f"👁️ {best_entry.get('view_count', 0):,} views • "
-                    f"⏱️ {format_time(best_entry.get('duration', 0))}",
-                    ephemeral=False
-                )
-            else:
-                await interaction.followup.send("❌ No suitable results found. Try being more specific.", ephemeral=True)
-                return
-        else:  # It's a single video
+            best_entry = entries[0]
+            print(f"Best entry: {best_entry['title']}")
+            print(f"URL: {best_entry['webpage_url']}")
+            print(f"Views: {best_entry.get('view_count', 0)}")
+            
+            player.queue.append(best_entry['webpage_url'])
+            await msg_handler.send(
+                f"🎵 Added **[{best_entry['title']}]({best_entry['webpage_url']})** to the queue.\n"
+                f"👁️ {int(best_entry.get('view_count', 0)):,} views • "
+                f"⏱️ {format_time(best_entry.get('duration', 0))}"
+            )
+        else:
+            print("Processing single video result")
+            print(f"Title: {info['title']}")
+            print(f"URL: {info['webpage_url']}")
+            print(f"Views: {info.get('view_count', 0)}")
+            
             player.queue.append(info['webpage_url'])
-            await interaction.followup.send(
+            await msg_handler.send(
                 f"🎵 Added **[{info['title']}]({info['webpage_url']})** to the queue.\n"
-                f"👁️ {info.get('view_count', 0):,} views • "
-                f"⏱️ {format_time(info.get('duration', 0))}",
-                ephemeral=False
+                f"👁️ {int(info.get('view_count', 0)):,} views • "
+                f"⏱️ {format_time(info.get('duration', 0))}"
             )
 
+        print("\n=== Starting playback ===")
         if not interaction.guild.voice_client or not interaction.guild.voice_client.is_playing():
+            print("No active playback, starting play_next")
             await play_next(ctx)
+            print("play_next started successfully")
+        else:
+            print("Already playing, track added to queue")
 
     except Exception as e:
-        print(f"Play Command Error: {e}")
+        print(f"\n=== Play Command Error ===")
+        print(f"Error: {str(e)}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        
+        # Add debug info to error message
+        debug_info = msg_handler.get_debug_info()
+        print("\n=== Message Handler Debug Info ===")
+        print(debug_info)
+        
+        error_msg = f"❌ Error processing your request: {str(e)}"
         try:
-            await interaction.followup.send(f"❌ Error processing your request: {str(e)}", ephemeral=True)
-        except:
-            print(f"Failed to send error message to user: {e}")
+            await msg_handler.send(error_msg)
+        except Exception as send_error:
+            print(f"Failed to send error message: {send_error}")
+            print(f"Send error type: {type(send_error)}")
+            print(f"Send error traceback: {traceback.format_exc()}")
+            print("\n=== Final Message Handler State ===")
+            print(msg_handler.get_debug_info())
 
 # --- Bot Events ---
 @bot.event
