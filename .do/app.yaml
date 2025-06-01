@@ -1,0 +1,24 @@
+name: discord-music-bot
+services:
+- name: bot
+  github:
+    branch: main
+    deploy_on_push: true
+    repo: your-username/discordbot
+  build_command: |
+    python setup_ffmpeg.py
+    pip install -r requirements.txt
+  run_command: python bot.py
+  http_port: 8080
+  instance_count: 1
+  instance_size_slug: basic-xxs
+  envs:
+  - key: DISCORD_TOKEN
+    scope: RUN_AND_BUILD_TIME
+    type: SECRET
+  - key: PYTHONUNBUFFERED
+    value: "1"
+    scope: RUN_AND_BUILD_TIME
+  - key: YOUTUBE_COOKIES_B64
+    scope: RUN_AND_BUILD_TIME
+    type: SECRET 

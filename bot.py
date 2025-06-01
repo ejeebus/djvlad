@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import tempfile
 import atexit
 import base64
+from pathlib import Path
 
 # --- Cookie Management ---
 def get_cookies_content():
@@ -161,7 +162,8 @@ ffmpeg_options = {
         '-cutoff 20000 '  # Frequency cutoff
         '-af "volume=1.0" '  # Volume normalization
         '-bufsize 96k'  # Reduced buffer size
-    )
+    ),
+    'executable': str(Path('ffmpeg/bin/ffmpeg.exe' if os.name == 'nt' else 'ffmpeg/bin/ffmpeg'))
 }
 
 # Add shutdown handler
@@ -1381,9 +1383,8 @@ async def handle_playback_complete(ctx, error):
             try:
                 if ctx.guild.voice_client:
                     await ctx.guild.voice_client.disconnect(force=True)
-                    channel = ctx.author.voice.channel
-                    await channel.connect(reconnect=True)
-                    print("Successfully reconnected to voice channel")
+                await ctx.guild.voice_client.connect(reconnect=True)
+                print("Successfully reconnected to voice channel")
             except Exception as e:
                 print(f"Failed to reconnect: {e}")
     
