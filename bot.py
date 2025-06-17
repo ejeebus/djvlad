@@ -141,34 +141,30 @@ ydl_opts = {
     'extract_flat': 'in_playlist',
     'default_search': 'ytsearch',
     'noplaylist': True,  # Don't extract playlists when searching
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '192',
-    }],
-    # Add additional options for better handling of YouTube's bot detection
-    'extractor_args': {
-        'youtube': {
-            'skip': ['dash', 'hls'],  # Skip formats that might trigger bot detection
-            'player_client': ['android', 'web'],  # Try different player clients
-            'player_skip': ['js', 'configs', 'webpage'],  # Skip unnecessary player components
-        }
-    },
-    'socket_timeout': 30,  # Increase socket timeout
-    'retries': 10,  # Increase retry attempts
-    'fragment_retries': 10,  # Increase fragment retry attempts
-    'extractor_retries': 10,  # Increase extractor retry attempts
-    'ignoreerrors': True,  # Ignore errors and continue
-    'no_warnings': False,  # Show warnings for debugging
-    'verbose': True,  # Enable verbose output
-    'cookiesfrombrowser': None,  # Don't use browser cookies
-    'cookiefile': None,  # Will be set dynamically
+    'nocheckcertificate': True,  # Skip SSL certificate validation
+    'ignoreerrors': False,  # Don't ignore errors
+    'no_warnings': False,  # Show warnings
+    'extractaudio': True,  # Extract audio
+    'audioformat': 'mp3',  # Convert to mp3
+    'audioquality': '192K',  # Audio quality
+    'outtmpl': '%(title)s.%(ext)s',  # Output template
+    'restrictfilenames': True,  # Restrict filenames
+    'noplaylist': True,  # Don't extract playlists
+    'age_limit': 21,  # Age limit
+    'geo_bypass': True,  # Bypass geo-restrictions
+    'geo_bypass_country': 'US',  # Bypass country
+    'geo_bypass_ip_block': '1.0.0.1',  # Bypass IP block
     'http_headers': {  # Add headers to look more like a browser
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-us,en;q=0.5',
         'Sec-Fetch-Mode': 'navigate',
-    }
+    },
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '192',
+    }]
 }
 
 # Define FFmpeg options globally
@@ -605,10 +601,6 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
     player = get_player(ctx.guild)
     voice_client = ctx.guild.voice_client
     temp_cookies_file = None
-    progress_task = None
-    cookie_warning_shown = False
-    max_retries = 3
-    retry_delay = 2
 
     try:
         print(f"\n=== Starting play_track ===")
@@ -653,156 +645,94 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
             if not ctx.author.voice:
                 error_msg = "❗ You must be in a voice channel to play music."
                 print(f"Sending error: {error_msg}")
-                if isinstance(ctx, commands.Context):
+                if msg_handler:
+                    await msg_handler.send(error_msg)
+                elif isinstance(ctx, commands.Context):
                     await ctx.channel.send(error_msg)
                 else:
                     await ctx.followup.send(error_msg, ephemeral=True)
                 return
             channel = ctx.author.voice.channel
             print(f"Connecting to voice channel: {channel.name}")
-            
-            # Retry logic for voice connection
-            for attempt in range(max_retries):
-                try:
-                    # Connect with optimized settings
-                    voice_client = await channel.connect(
-                        timeout=30,  # Reduced timeout
-                        reconnect=True,  # Enable reconnection
-                        self_deaf=True,  # Deafen the bot
-                        self_mute=False  # Don't mute the bot
-                    )
-                    
-                    # Configure voice client for better stability
-                    voice_client.recv_audio = False  # Disable audio receiving
-                    voice_client.send_audio = True   # Enable audio sending
-                    
-                    # Set voice state
-                    await ctx.guild.change_voice_state(
-                        channel=voice_client.channel,
-                        self_deaf=True,  # Deafen the bot
-                        self_mute=False  # Don't mute the bot
-                    )
-                    print("Connected to voice channel with optimized settings")
-                    break
-                except Exception as e:
-                    print(f"Connection attempt {attempt + 1} failed: {e}")
-                    if attempt < max_retries - 1:
-                        print(f"Retrying in {retry_delay} seconds...")
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                    else:
-                        raise ValueError(f"Failed to connect to voice channel after {max_retries} attempts: {e}")
+            voice_client = await channel.connect()
 
-        # Create a copy of ydl_opts for this specific request
-        current_ydl_opts = ydl_opts.copy()
-        
-        # Add cookies if available
+        # Create temporary cookies file
         temp_cookies_file = create_temp_cookies_file()
+        create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
+
+        # Enhanced yt-dlp options for better extraction
+        ydl_opts = {
+            'format': 'bestaudio/best',  # Prefer best audio quality
+            'quiet': False,  # Enable logging
+            'nocheckcertificate': True,  # Skip SSL certificate validation
+            'ignoreerrors': False,  # Don't ignore errors
+            'no_warnings': False,  # Show warnings
+            'extractaudio': True,  # Extract audio
+            'audioformat': 'mp3',  # Convert to mp3
+            'audioquality': '192K',  # Audio quality
+            'outtmpl': '%(title)s.%(ext)s',  # Output template
+            'restrictfilenames': True,  # Restrict filenames
+            'noplaylist': True,  # Don't extract playlists
+            'age_limit': 21,  # Age limit
+            'geo_bypass': True,  # Bypass geo-restrictions
+            'geo_bypass_country': 'US',  # Bypass country
+            'geo_bypass_ip_block': '1.0.0.1',  # Bypass IP block
+            'http_headers': {  # Add headers to look more like a browser
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+            },
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        }
+        
+        # Add cookies file if available
         if temp_cookies_file:
-            current_ydl_opts['cookiefile'] = temp_cookies_file
-            print("Added cookies to yt-dlp options")
+            ydl_opts['cookiefile'] = temp_cookies_file
 
-        # Create a copy of ffmpeg options for this specific request
-        current_ffmpeg_options = ffmpeg_options.copy()
-
-        async def try_extract_without_cookies():
-            """Try to extract video info without cookies first."""
-            print("\n=== Attempting extraction without cookies ===")
-            try:
-                # Use a copy without cookies
-                opts = current_ydl_opts.copy()
-                if 'cookiefile' in opts:
-                    del opts['cookiefile']
-                
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                
-                # Ensure we get the best audio format
-                if isinstance(info, dict) and 'formats' in info:
-                    audio_formats = [f for f in info['formats'] 
-                                   if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-                    if audio_formats:
-                        # Sort by audio quality
-                        audio_formats.sort(key=lambda x: (
-                            x.get('abr', 0) or 0,  # Audio bitrate
-                            x.get('asr', 0) or 0,  # Audio sample rate
-                            x.get('filesize', 0) or 0  # File size as fallback
-                        ), reverse=True)
-                        best_format = audio_formats[0]
-                        info['url'] = best_format['url']
-                        print(f"Selected audio format: {best_format.get('format_id')} "
-                              f"({best_format.get('abr', 'N/A')}kbps, "
-                              f"{best_format.get('asr', 'N/A')}Hz)")
-                
-                return info
-            except Exception as e:
-                print(f"Extraction without cookies failed: {str(e)}")
-                # Check if the error suggests cookies might help
-                error_str = str(e).lower()
-                if any(keyword in error_str for keyword in [
-                    'sign in to confirm your age',
-                    'age restricted',
-                    'private video',
-                    'video unavailable'
-                ]):
-                    print("Error suggests cookies might be needed")
-                    return None
-                raise  # Re-raise if it's not a cookie-related error
-
-        async def try_extract_with_cookies():
-            """Try to extract video info with cookies if available."""
-            print("\n=== Attempting extraction with cookies ===")
-            if not temp_cookies_file:
-                print("No cookies available")
-                return None
-
-            try:
-                with yt_dlp.YoutubeDL(current_ydl_opts) as ydl:
-                    return await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-            except Exception as e:
-                print(f"Extraction with cookies failed: {str(e)}")
-                return None
-
-        # Try extraction without cookies first
+        # Extract video information
+        print(f"\n=== Extracting video info for: {url} ===")
         try:
-            info = await try_extract_without_cookies()
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                print("Created yt-dlp instance")
+                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                print(f"Video info extracted successfully")
+        except yt_dlp.utils.DownloadError as e:
+            print(f"yt-dlp DownloadError: {str(e)}")
+            if "Video unavailable" in str(e):
+                raise ValueError("This video is unavailable or private")
+            elif "Sign in" in str(e):
+                raise ValueError("This video requires authentication")
+            elif "Age restricted" in str(e):
+                raise ValueError("This video is age-restricted and requires cookies")
+            else:
+                raise ValueError(f"Download error: {str(e)}")
+        except yt_dlp.utils.ExtractorError as e:
+            print(f"yt-dlp ExtractorError: {str(e)}")
+            raise ValueError(f"Could not extract video information: {str(e)}")
         except Exception as e:
-            print(f"Initial extraction failed with error: {str(e)}")
-            info = None
+            print(f"Error during yt-dlp extraction: {str(e)}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            raise ValueError(f"Error extracting video info: {str(e)}")
 
-        # If that fails, check if it's a cookie-required error
+        # Validate the info dictionary
         if not info:
-            print("Initial extraction failed, checking if cookies are needed")
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # Just try to get basic info to check if cookies are needed
-                    basic_info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False, process=False))
-                    if isinstance(basic_info, dict):
-                        needs_cookies = False
-                        reason = []
+            print("No info returned from yt-dlp")
+            raise ValueError("No video information found")
 
-                        # Only check for essential cases for a music bot
-                        if basic_info.get('age_limit', 0) > 0:
-                            needs_cookies = True
-                            reason.append("age-restricted")
-                        if 'private' in str(basic_info).lower():
-                            needs_cookies = True
-                            reason.append("private")
+        # Ensure we have required fields
+        if not all(key in info for key in ['url', 'title']):
+            print(f"Video missing required fields: {info}")
+            raise ValueError("Incomplete video information")
 
-                        if needs_cookies:
-                            print(f"Video requires cookies: {', '.join(reason)}")
-                            info = await try_extract_with_cookies()
-                            if not info:
-                                raise ValueError(f"Could not access {', '.join(reason)} content. Cookies may be invalid or expired.")
-                        else:
-                            print("Video is not restricted, but extraction failed")
-                            raise ValueError("Could not extract video information")
-            except Exception as e:
-                print(f"Error checking video status: {str(e)}")
-                raise ValueError(f"Error processing video: {str(e)}")
-
-        if not info:
-            raise ValueError("Could not extract video information")
+        # Add webpage_url field for consistency
+        info['webpage_url'] = url
 
         # Process the video info
         print("\n=== Video Info Available ===")
@@ -811,20 +741,6 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
         print(f"Uploader: {info.get('uploader', 'Not found')}")
         print(f"View count: {info.get('view_count', 'Not found')}")
         print(f"Like count: {info.get('like_count', 'Not found')}")
-
-        # Ensure we have the webpage_url
-        if 'webpage_url' not in info and 'url' in info:
-            if 'youtube.com' in url or 'youtu.be' in url:
-                info['webpage_url'] = url
-            else:
-                try:
-                    if 'original_url' in info:
-                        info['webpage_url'] = info['original_url']
-                    elif 'id' in info:
-                        info['webpage_url'] = f"https://www.youtube.com/watch?v={info['id']}"
-                except Exception as e:
-                    print(f"Error constructing webpage_url: {e}")
-                    info['webpage_url'] = url
 
         # Get the audio stream URL
         if 'url' not in info:
@@ -847,12 +763,13 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
         
         print(f"Track info set - Title: {info.get('title')}, Duration: {info.get('duration')}")
 
+        # Create audio source
         try:
             print("Creating audio source...")
             # Create audio source with optimized settings
             source = discord.FFmpegOpusAudio(
                 info['url'],
-                **current_ffmpeg_options
+                **ffmpeg_options
             )
             
             # Configure source for better stability
@@ -905,36 +822,27 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
             # The playback will continue even if the message fails
 
     except Exception as e:
-        print(f"\n=== Play Command Error ===")
+        print(f"\n=== Play Track Error ===")
         print(f"Error: {str(e)}")
         print(f"Error type: {type(e)}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
         
-        # Add debug info to error message if msg_handler is available
-        if msg_handler:
-            debug_info = msg_handler.get_debug_info()
-            print("\n=== Message Handler Debug Info ===")
-            print(debug_info)
+        # Clear current track info on error
+        player.current_track_url = None
+        player.current_track_info = None
         
-        # Ensure we have a non-empty error message
+        # Send error message
         error_msg = str(e) if str(e).strip() else f"Unknown error occurred (type: {type(e).__name__})"
         try:
             if msg_handler:
-                await msg_handler.send(f"❌ Error processing your request: {error_msg}")
+                await msg_handler.send(f"❌ Error playing track: {error_msg}")
+            elif isinstance(ctx, commands.Context):
+                await ctx.channel.send(f"❌ Error playing track: {error_msg}")
             else:
-                # Fallback to direct message send if no msg_handler
-                if isinstance(ctx, commands.Context):
-                    await ctx.channel.send(f"❌ Error processing your request: {error_msg}")
-                else:
-                    await ctx.followup.send(f"❌ Error processing your request: {error_msg}", ephemeral=True)
+                await ctx.followup.send(f"❌ Error playing track: {error_msg}", ephemeral=True)
         except Exception as send_error:
             print(f"Failed to send error message: {send_error}")
-            print(f"Send error type: {type(send_error)}")
-            print(f"Send error traceback: {traceback.format_exc()}")
-            if msg_handler:
-                print("\n=== Final Message Handler State ===")
-                print(msg_handler.get_debug_info())
 
     finally:
         # Clean up temporary cookies file
@@ -1093,7 +1001,7 @@ class MessageHandler:
             self._log_message("Initialize", "Attempting to defer response")
             await self.interaction.response.defer(ephemeral=False)
             self.initialized = True
-            self.thinking_message = self.interaction.original_response()  # Store the thinking message
+            self.thinking_message = await self.interaction.original_response()  # Fix: await the coroutine
             self._log_message("Initialize", "Success", "Response deferred")
         except discord.NotFound as e:
             self._log_message("Initialize", "Failed", f"Interaction expired: {str(e)}")
@@ -1222,6 +1130,25 @@ async def play_command(interaction: discord.Interaction, query: str):
             'extract_flat': 'in_playlist',
             'default_search': 'ytsearch',
             'noplaylist': True,  # Don't extract playlists when searching
+            'nocheckcertificate': True,  # Skip SSL certificate validation
+            'ignoreerrors': False,  # Don't ignore errors
+            'no_warnings': False,  # Show warnings
+            'extractaudio': True,  # Extract audio
+            'audioformat': 'mp3',  # Convert to mp3
+            'audioquality': '192K',  # Audio quality
+            'outtmpl': '%(title)s.%(ext)s',  # Output template
+            'restrictfilenames': True,  # Restrict filenames
+            'noplaylist': True,  # Don't extract playlists
+            'age_limit': 21,  # Age limit
+            'geo_bypass': True,  # Bypass geo-restrictions
+            'geo_bypass_country': 'US',  # Bypass country
+            'geo_bypass_ip_block': '1.0.0.1',  # Bypass IP block
+            'http_headers': {  # Add headers to look more like a browser
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+            },
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -1243,12 +1170,25 @@ async def play_command(interaction: discord.Interaction, query: str):
                         info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
                         print(f"Raw search results type: {type(info)}")
                         print(f"Raw search results keys: {info.keys() if isinstance(info, dict) else 'Not a dict'}")
+                    except yt_dlp.utils.DownloadError as e:
+                        print(f"yt-dlp DownloadError: {str(e)}")
+                        if "Video unavailable" in str(e):
+                            raise ValueError("This video is unavailable or private")
+                        elif "Sign in" in str(e):
+                            raise ValueError("This video requires authentication")
+                        elif "Age restricted" in str(e):
+                            raise ValueError("This video is age-restricted and requires cookies")
+                        else:
+                            raise ValueError(f"Download error: {str(e)}")
+                    except yt_dlp.utils.ExtractorError as e:
+                        print(f"yt-dlp ExtractorError: {str(e)}")
+                        raise ValueError(f"Could not extract video information: {str(e)}")
                     except Exception as e:
                         print(f"Error during yt-dlp extraction: {str(e)}")
                         print(f"Error type: {type(e)}")
                         import traceback
                         print(f"Traceback: {traceback.format_exc()}")
-                        raise
+                        raise ValueError(f"Error extracting video info: {str(e)}")
                     
                     # Validate the info dictionary
                     if not info:
@@ -1300,6 +1240,9 @@ async def play_command(interaction: discord.Interaction, query: str):
                         info['webpage_url'] = info['url']
                     
                     return info
+            except ValueError:
+                # Re-raise ValueError as-is (these are our custom error messages)
+                raise
             except Exception as e:
                 print(f"Error in try_extract_info: {str(e)}")
                 print(f"Error type: {type(e)}")
