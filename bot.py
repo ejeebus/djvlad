@@ -1045,7 +1045,7 @@ async def play_track(ctx, url: str, msg_handler=None):
         if voice_client and not voice_client.is_connected():
             print("Voice client disconnected during extraction, attempting to reconnect...")
             try:
-                voice_client = await voice_client.connect(timeout=20.0, self_deaf=True)
+                voice_client = await channel.connect(timeout=20.0, self_deaf=True)
                 print("Successfully reconnected to voice channel")
             except Exception as e:
                 print(f"Failed to reconnect to voice channel: {e}")
