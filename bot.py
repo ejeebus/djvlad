@@ -675,7 +675,144 @@ async def play_track(ctx, url: str, msg_handler=None):
         print(f"Player state reset - start time: {player.start_time}")
         print(f"Current track URL set to: {player.current_track_url}")
         
-        # Connect to voice channel if not already connected
+        # EXTRACT VIDEO INFO FIRST (before connecting to voice)
+        print(f"\n=== Extracting video info BEFORE voice connection ===")
+        
+        # Create temporary cookies file
+        temp_cookies_file = create_temp_cookies_file()
+        create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
+
+        # Define extraction strategies - optimized for speed
+        extraction_strategies = [
+            {
+                'name': 'Fast Web Client',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'bestaudio/best',
+                    'socket_timeout': 15,  # Reduced timeout
+                    'retries': 3,  # Reduced retries
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                    },
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['web'],
+                            'player_skip': ['js', 'configs'],
+                            'youtubetab': {'skip': 'authcheck'}
+                        }
+                    }
+                }
+            },
+            {
+                'name': 'Fast Mobile Client',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'bestaudio/best',
+                    'socket_timeout': 15,
+                    'retries': 3,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['android'],
+                            'player_skip': ['js', 'configs'],
+                            'youtubetab': {'skip': 'authcheck'}
+                        }
+                    }
+                }
+            }
+        ]
+        
+        # Add cookies to all strategies
+        for strategy in extraction_strategies:
+            if temp_cookies_file:
+                strategy['options']['cookiefile'] = temp_cookies_file
+        
+        # Try each strategy
+        info = None
+        last_error = None
+        
+        for i, strategy in enumerate(extraction_strategies, 1):
+            print(f"Trying strategy {i}/2: {strategy['name']}")
+            
+            try:
+                with yt_dlp.YoutubeDL(strategy['options']) as ydl:
+                    print(f"Created yt-dlp instance for {strategy['name']}")
+                    info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                    print(f"✓ {strategy['name']} extraction successful")
+                    break  # Success! Exit the loop
+                    
+            except yt_dlp.utils.DownloadError as e:
+                error_msg = str(e)
+                print(f"✗ {strategy['name']} failed: {error_msg}")
+                last_error = e
+                
+                # Check if it's a format issue and try next strategy
+                if "Requested format is not available" in error_msg:
+                    print(f"Format issue for {strategy['name']}, trying next strategy...")
+                    continue
+                else:
+                    # For other errors, try next strategy
+                    continue
+                    
+            except Exception as e:
+                print(f"✗ {strategy['name']} failed with unexpected error: {e}")
+                last_error = e
+                continue
+        
+        if not info:
+            error_msg = f"Failed to extract video information: {last_error}"
+            print(f"❌ {error_msg}")
+            if msg_handler:
+                await msg_handler.send(f"❌ Error: {error_msg}")
+            elif hasattr(ctx, 'channel') and ctx.channel:
+                await ctx.channel.send(f"❌ Error: {error_msg}")
+            else:
+                await ctx.followup.send(f"❌ Error: {error_msg}", ephemeral=True)
+            return
+        
+        print(f"Video info extracted successfully with {strategy['name']}")
+        
+        # Validate the info dictionary
+        if not info:
+            print("No info returned from yt-dlp")
+            raise ValueError("No video information found")
+
+        # Ensure we have required fields
+        if not all(key in info for key in ['url', 'title']):
+            print(f"Video missing required fields: {info}")
+            raise ValueError("Incomplete video information")
+
+        # Add webpage_url field for consistency
+        info['webpage_url'] = url
+        
+        # Set the track info in the player
+        player.current_track_info = info
+        
+        print(f"\n=== Video Info Available ===")
+        print(f"Title: {info.get('title', 'Unknown')}")
+        print(f"Duration: {info.get('duration', 'Unknown')}")
+        print(f"Uploader: {info.get('uploader', 'Unknown')}")
+        print(f"View count: {info.get('view_count', 'Unknown')}")
+        print(f"Like count: {info.get('like_count', 'Not found')}")
+        print(f"Using webpage URL: {info.get('webpage_url', url)}")
+        print(f"Using audio URL: {info.get('url', 'Not found')[:100]}...")
+        
+        # NOW connect to voice channel (after video extraction is complete)
         if not voice_client:
             if not author.voice:
                 error_msg = "❗ You must be in a voice channel to play music."
@@ -761,201 +898,9 @@ async def play_track(ctx, url: str, msg_handler=None):
                     await ctx.followup.send(error_msg, ephemeral=True)
                 return
 
-        # Create temporary cookies file
-        temp_cookies_file = create_temp_cookies_file()
-        create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
-
-        # Add cookies file to yt-dlp options if available
-        if temp_cookies_file:
-            ydl_opts['cookiefile'] = temp_cookies_file
-
-        # Create enhanced yt-dlp options for direct video extraction
-        enhanced_ydl_opts = ydl_opts.copy()
-        enhanced_ydl_opts.update({
-            'quiet': True,  # Reduce logging to avoid detection
-            'no_warnings': True,  # Suppress warnings
-            'extract_flat': False,  # We want full extraction for direct videos
-            'format': 'best[height<=720]/best',  # More compatible format selection
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Cache-Control': 'max-age=0',
-                'Referer': 'https://www.youtube.com/',
-                'Origin': 'https://www.youtube.com',
-            },
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web'],  # Try web client first
-                    'player_skip': ['js', 'configs'],
-                    'player_params': {
-                        'hl': 'en',
-                        'gl': 'US',
-                    }
-                }
-            },
-            'socket_timeout': 60,  # Increase timeout
-            'retries': 15,  # More retries
-            'fragment_retries': 15,
-            'extractor_retries': 15,
-        })
-
-        # Extract video information
-        print(f"\n=== Extracting video info for: {url} ===")
+        # Now that we have both video info and voice connection, start playback
+        print(f"Track info set - Title: {info.get('title', 'Unknown')}, Duration: {info.get('duration', 'Unknown')}")
         
-        # Try multiple extraction strategies
-        extraction_strategies = [
-            {
-                'name': 'Fast Web Client',
-                'options': {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'format': 'bestaudio/best',
-                    'socket_timeout': 15,  # Reduced timeout
-                    'retries': 3,  # Reduced retries
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Connection': 'keep-alive',
-                    },
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': ['web'],
-                            'player_skip': ['js', 'configs'],
-                        },
-                        'youtubetab': {
-                            'skip': ['authcheck']
-                        }
-                    }
-                }
-            },
-            {
-                'name': 'Fast Mobile Client',
-                'options': {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'format': 'bestaudio/best',
-                    'socket_timeout': 15,  # Reduced timeout
-                    'retries': 3,  # Reduced retries
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Connection': 'keep-alive',
-                    },
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': ['android'],
-                            'player_skip': ['js', 'configs'],
-                        },
-                        'youtubetab': {
-                            'skip': ['authcheck']
-                        }
-                    }
-                }
-            }
-        ]
-        
-        # Add cookies to all strategies
-        for strategy in extraction_strategies:
-            if temp_cookies_file:
-                strategy['options']['cookiefile'] = temp_cookies_file
-        
-        # Try each strategy
-        info = None
-        last_error = None
-        
-        for i, strategy in enumerate(extraction_strategies, 1):
-            print(f"Trying strategy {i}/2: {strategy['name']}")
-            
-            try:
-                with yt_dlp.YoutubeDL(strategy['options']) as ydl:
-                    print(f"Created yt-dlp instance for {strategy['name']}")
-                    info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                    print(f"✓ {strategy['name']} extraction successful")
-                    break  # Success! Exit the loop
-                    
-            except yt_dlp.utils.DownloadError as e:
-                last_error = e
-                print(f"✗ {strategy['name']} failed: {str(e)}")
-                if "Sign in" in str(e):
-                    print(f"Bot detection triggered for {strategy['name']}, trying next strategy...")
-                    continue
-                elif "Video unavailable" in str(e):
-                    raise ValueError("This video is unavailable or private")
-                elif "Requested format is not available" in str(e):
-                    print(f"Format issue for {strategy['name']}, trying next strategy...")
-                    continue
-                else:
-                    print(f"Other error for {strategy['name']}: {str(e)}")
-                    continue
-            except Exception as e:
-                last_error = e
-                print(f"✗ {strategy['name']} failed with exception: {str(e)}")
-                continue
-        
-        # If all strategies failed
-        if info is None:
-            print("All extraction strategies failed")
-            raise ValueError("Could not find suitable audio format for this video. The video may be restricted or unavailable.")
-        
-        print(f"Video info extracted successfully with {strategy['name']}")
-        
-        # Validate the info dictionary
-        if not info:
-            print("No info returned from yt-dlp")
-            raise ValueError("No video information found")
-
-        # Ensure we have required fields
-        if not all(key in info for key in ['url', 'title']):
-            print(f"Video missing required fields: {info}")
-            raise ValueError("Incomplete video information")
-
-        # Add webpage_url field for consistency
-        info['webpage_url'] = url
-
-        # Process the video info
-        print("\n=== Video Info Available ===")
-        print(f"Title: {info.get('title', 'Not found')}")
-        print(f"Duration: {info.get('duration', 'Not found')}")
-        print(f"Uploader: {info.get('uploader', 'Not found')}")
-        print(f"View count: {info.get('view_count', 'Not found')}")
-        print(f"Like count: {info.get('like_count', 'Not found')}")
-
-        # Get the audio stream URL
-        if 'url' not in info:
-            print("No direct URL found, extracting format...")
-            formats = info.get('formats', [])
-            audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-            if audio_formats:
-                best_audio = audio_formats[-1]
-                info['url'] = best_audio['url']
-            else:
-                raise ValueError("No suitable audio format found")
-
-        print(f"Using webpage URL: {info.get('webpage_url', 'Not found')}")
-        print(f"Using audio URL: {info.get('url', 'Not found')[:100]}...")
-
-        # After successful extraction, update the track info
-        player.current_track_info = info
-        if url not in player.playback_history:
-            player.playback_history.append(url)
-        
-        print(f"Track info set - Title: {info.get('title')}, Duration: {info.get('duration')}")
-
         # Create audio source
         try:
             print("Creating audio source...")
@@ -983,76 +928,53 @@ async def play_track(ctx, url: str, msg_handler=None):
             ))
             print("Playback started successfully")
             
-            # Start progress updates after confirming playback has started
-            if voice_client.is_playing():
-                print("Starting progress update task")
-                # Cancel any existing progress task
-                if hasattr(player, 'progress_task') and player.progress_task:
-                    try:
-                        player.progress_task.cancel()
-                    except:
-                        pass
-                player.progress_task = bot.loop.create_task(update_progress(ctx, player))
-                print("Progress update task started")
+            # Create and send player embed
+            embed = await create_player_embed(info, author, player)
+            if msg_handler:
+                player.player_message = await msg_handler.send(embed=embed)
+            elif hasattr(ctx, 'channel') and ctx.channel:
+                player.player_message = await ctx.channel.send(embed=embed)
             else:
-                print("Warning: Voice client not playing after source creation")
+                player.player_message = await ctx.followup.send(embed=embed)
+            
+            # Start progress updates
+            asyncio.create_task(update_progress(ctx, player))
             
         except Exception as e:
-            print(f"Error creating/starting audio source: {str(e)}")
+            print(f"Error creating/starting audio source: {e}")
             print(f"Error type: {type(e)}")
             import traceback
             print(f"Traceback: {traceback.format_exc()}")
-            # Clear current track info on error
-            player.current_track_url = None
-            player.current_track_info = None
             raise ValueError(f"Failed to start playback: {str(e)}")
-
-        # Create player message
-        try:
-            print("Creating player message")
-            embed = await create_player_embed(info, author, player)
-            view = MusicControls()
-            if hasattr(ctx, 'channel') and ctx.channel:
-                player.player_message = await ctx.channel.send(embed=embed, view=view)
-            else:
-                # For interactions, we need to use followup
-                player.player_message = await ctx.followup.send(embed=embed, view=view)
-            print("Player message sent successfully")
-        except Exception as e:
-            print(f"Error creating player message: {e}")
-            # Don't raise here, just log the error
-            # The playback will continue even if the message fails
 
     except Exception as e:
         print(f"\n=== Play Track Error ===")
-        print(f"Error: {str(e)}")
+        print(f"Error: {e}")
         print(f"Error type: {type(e)}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
         
-        # Ensure we have a non-empty error message
-        error_msg = str(e) if str(e).strip() else f"Unknown error occurred (type: {type(e).__name__})"
-        try:
-            if msg_handler:
-                await msg_handler.send(f"❌ Error playing track: {error_msg}")
-            else:
-                # Fallback to direct message send if no msg_handler
-                if isinstance(ctx, commands.Context):
-                    await ctx.channel.send(f"❌ Error playing track: {error_msg}")
-                else:
-                    await ctx.followup.send(f"❌ Error playing track: {error_msg}", ephemeral=True)
-        except Exception as send_error:
-            print(f"Failed to send error message: {send_error}")
-            print(f"Send error type: {type(send_error)}")
-            print(f"Send error traceback: {traceback.format_exc()}")
-            if msg_handler:
-                print("\n=== Final Message Handler State ===")
-                print(msg_handler.get_debug_info())
-
+        # Send error message
+        error_msg = f"❌ Error playing track: {str(e)}"
+        if msg_handler:
+            await msg_handler.send(error_msg)
+        elif hasattr(ctx, 'channel') and ctx.channel:
+            await ctx.channel.send(error_msg)
+        else:
+            await ctx.followup.send(error_msg, ephemeral=True)
+        
+        # Clean up player state
+        player.current_track_url = None
+        player.current_track_info = None
+        
     finally:
         # Clean up temporary cookies file
-        if temp_cookies_file:
-            cleanup_temp_cookies_file(temp_cookies_file)
+        if temp_cookies_file and os.path.exists(temp_cookies_file):
+            try:
+                os.remove(temp_cookies_file)
+                print(f"Cleaned up temporary cookies file: {temp_cookies_file}")
+            except Exception as e:
+                print(f"Error cleaning up cookies file: {e}")
 
 async def update_progress(ctx, player: GuildPlayer):
     """Updates the progress bar every 5 seconds."""
