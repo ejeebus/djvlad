@@ -15,6 +15,8 @@ import atexit
 import base64
 from pathlib import Path
 import subprocess
+import time
+import random
 
 # --- Context Wrapper ---
 class BotContext:
@@ -44,6 +46,28 @@ class BotContext:
             if self.channel:
                 return await self.channel.send(content=content, embed=embed, view=view)
             raise
+
+# --- Rate Limiting ---
+class RateLimiter:
+    """Simple rate limiter to avoid YouTube bot detection."""
+    def __init__(self):
+        self.last_request = 0
+        self.min_delay = 2  # Minimum 2 seconds between requests
+        
+    async def wait(self):
+        """Wait if necessary to respect rate limits."""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request
+        
+        if time_since_last < self.min_delay:
+            wait_time = self.min_delay - time_since_last + random.uniform(0.5, 1.5)  # Add some randomness
+            print(f"Rate limiting: waiting {wait_time:.1f}s")
+            await asyncio.sleep(wait_time)
+        
+        self.last_request = time.time()
+
+# Global rate limiter
+rate_limiter = RateLimiter()
 
 # --- Cookie Management ---
 def get_cookies_content():
@@ -787,7 +811,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                         'extract_flat': False,
                         # Don't specify format - let yt-dlp choose
                         'socket_timeout': 30,
-                        'retries': 5,
+                        'retries': 3,  # Reduced retries to avoid rate limiting
                         'http_headers': {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -801,6 +825,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                             'Sec-Fetch-Site': 'none',
                             'Sec-Fetch-User': '?1',
                             'Cache-Control': 'max-age=0',
+                            'Referer': 'https://www.youtube.com/',
                         },
                         'extractor_args': {
                             'youtube': {
@@ -812,14 +837,14 @@ async def play_track(ctx, url: str, msg_handler=None):
                     }
                 },
                 {
-                    'name': 'Audio Only',
+                    'name': 'Mobile Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
                         'format': 'bestaudio/best',
                         'socket_timeout': 30,
-                        'retries': 5,
+                        'retries': 3,
                         'http_headers': {
                             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -827,6 +852,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                             'Accept-Encoding': 'gzip, deflate',
                             'Connection': 'keep-alive',
                             'Upgrade-Insecure-Requests': '1',
+                            'Referer': 'https://m.youtube.com/',
                         },
                         'extractor_args': {
                             'youtube': {
@@ -838,20 +864,21 @@ async def play_track(ctx, url: str, msg_handler=None):
                     }
                 },
                 {
-                    'name': 'Any Format',
+                    'name': 'Minimal Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
                         'format': 'best',  # Use generic best format
                         'socket_timeout': 30,
-                        'retries': 5,
+                        'retries': 3,
                         'http_headers': {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                             'Accept-Language': 'en-US,en;q=0.5',
                             'Accept-Encoding': 'gzip, deflate',
                             'Connection': 'keep-alive',
+                            'Referer': 'https://www.youtube.com/',
                         },
                         'extractor_args': {
                             'youtube': {
@@ -862,20 +889,21 @@ async def play_track(ctx, url: str, msg_handler=None):
                     }
                 },
                 {
-                    'name': 'Lowest Quality',
+                    'name': 'Legacy Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
                         'format': 'worst',  # Try worst quality as fallback
                         'socket_timeout': 30,
-                        'retries': 5,
+                        'retries': 3,
                         'http_headers': {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                             'Accept-Language': 'en-US,en;q=0.5',
                             'Accept-Encoding': 'gzip, deflate',
                             'Connection': 'keep-alive',
+                            'Referer': 'https://www.youtube.com/',
                         },
                         'extractor_args': {
                             'youtube': {
@@ -898,6 +926,9 @@ async def play_track(ctx, url: str, msg_handler=None):
             
             # First, try to get available formats for debugging
             try:
+                # Rate limiting for debug request
+                await rate_limiter.wait()
+                
                 debug_options = {
                     'quiet': True,
                     'no_warnings': True,
@@ -939,6 +970,9 @@ async def play_track(ctx, url: str, msg_handler=None):
             
             for i, strategy in enumerate(extraction_strategies, 1):
                 print(f"Trying strategy {i}/4: {strategy['name']}")
+                
+                # Rate limiting
+                await rate_limiter.wait()
                 
                 try:
                     with yt_dlp.YoutubeDL(strategy['options']) as ydl:
@@ -983,6 +1017,9 @@ async def play_track(ctx, url: str, msg_handler=None):
                 # Try one more fallback - use the search result directly
                 print("🔄 Trying fallback: Using search result URL directly...")
                 try:
+                    # Rate limiting for fallback
+                    await rate_limiter.wait()
+                    
                     fallback_options = {
                         'quiet': True,
                         'no_warnings': True,
@@ -1549,6 +1586,9 @@ async def play_command(interaction: discord.Interaction, query: str):
 async def search_and_play(ctx, query: str, msg_handler=None):
     """Search for a song and play it."""
     print(f"\n=== Starting search for: {query} ===")
+
+    # Rate limiting for search
+    await rate_limiter.wait()
 
     # Create temporary cookies file
     temp_cookies_file = create_temp_cookies_file()
