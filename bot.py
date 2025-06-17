@@ -780,12 +780,12 @@ async def play_track(ctx, url: str, msg_handler=None):
             # Define extraction strategies - optimized for speed and reliability
             extraction_strategies = [
                 {
-                    'name': 'Basic Audio Client',
+                    'name': 'No Format Preference',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
-                        'format': 'bestaudio/best',  # Use basic format first
+                        # Don't specify format - let yt-dlp choose
                         'socket_timeout': 30,
                         'retries': 5,
                         'http_headers': {
@@ -812,12 +812,12 @@ async def play_track(ctx, url: str, msg_handler=None):
                     }
                 },
                 {
-                    'name': 'Simple Audio Client',
+                    'name': 'Audio Only',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
-                        'format': 'best',  # Use generic best format
+                        'format': 'bestaudio/best',
                         'socket_timeout': 30,
                         'retries': 5,
                         'http_headers': {
@@ -838,12 +838,12 @@ async def play_track(ctx, url: str, msg_handler=None):
                     }
                 },
                 {
-                    'name': 'Minimal Client',
+                    'name': 'Any Format',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
-                        'format': 'worst',  # Try worst quality as fallback
+                        'format': 'best',  # Use generic best format
                         'socket_timeout': 30,
                         'retries': 5,
                         'http_headers': {
@@ -862,12 +862,12 @@ async def play_track(ctx, url: str, msg_handler=None):
                     }
                 },
                 {
-                    'name': 'Legacy Client',
+                    'name': 'Lowest Quality',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
-                        'format': 'bestaudio/best',
+                        'format': 'worst',  # Try worst quality as fallback
                         'socket_timeout': 30,
                         'retries': 5,
                         'http_headers': {
@@ -898,7 +898,30 @@ async def play_track(ctx, url: str, msg_handler=None):
             
             # First, try to get available formats for debugging
             try:
-                debug_options = extraction_strategies[0]['options'].copy()
+                debug_options = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    # Don't specify format to get all available formats
+                    'socket_timeout': 30,
+                    'retries': 5,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                    },
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['web'],
+                            'player_skip': ['js'],
+                            'youtubetab': {'skip': 'authcheck'}
+                        }
+                    }
+                }
                 if temp_cookies_file:
                     debug_options['cookiefile'] = temp_cookies_file
                 
@@ -956,7 +979,43 @@ async def play_track(ctx, url: str, msg_handler=None):
             if not info:
                 error_msg = str(last_error) if last_error else "All extraction strategies failed"
                 print(f"❌ Failed to extract video information: {error_msg}")
-                raise ValueError(f"Failed to extract video information: {error_msg}")
+                
+                # Try one more fallback - use the search result directly
+                print("🔄 Trying fallback: Using search result URL directly...")
+                try:
+                    fallback_options = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': False,
+                        'format': 'bestaudio/best',
+                        'socket_timeout': 30,
+                        'retries': 5,
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Accept-Encoding': 'gzip, deflate',
+                            'Connection': 'keep-alive',
+                        },
+                        'extractor_args': {
+                            'youtube': {
+                                'player_client': ['web'],
+                                'player_skip': ['js'],
+                            }
+                        }
+                    }
+                    if temp_cookies_file:
+                        fallback_options['cookiefile'] = temp_cookies_file
+                    
+                    with yt_dlp.YoutubeDL(fallback_options) as ydl:
+                        info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                        if info:
+                            print("✓ Fallback extraction succeeded")
+                        else:
+                            raise ValueError("Fallback extraction returned no info")
+                except Exception as fallback_error:
+                    print(f"✗ Fallback also failed: {fallback_error}")
+                    raise ValueError(f"Failed to extract video information: {error_msg}")
             
             print(f"Video info extracted successfully with {strategy['name']}")
             

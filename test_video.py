@@ -40,6 +40,14 @@ async def test_video_extraction():
     # Test strategies
     strategies = [
         {
+            'name': 'No Format Preference',
+            'options': {
+                # Don't specify format - let yt-dlp choose
+                'quiet': False,
+                'no_warnings': False,
+            }
+        },
+        {
             'name': 'Basic Audio',
             'options': {
                 'format': 'bestaudio/best',
