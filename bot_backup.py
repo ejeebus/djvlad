@@ -16,35 +16,6 @@ import base64
 from pathlib import Path
 import subprocess
 
-# --- Context Wrapper ---
-class BotContext:
-    """Wrapper to handle both Context and Interaction objects consistently."""
-    def __init__(self, interaction_or_context):
-        self.original = interaction_or_context
-        self.guild = getattr(interaction_or_context, 'guild', None)
-        self.channel = getattr(interaction_or_context, 'channel', None)
-        self.author = getattr(interaction_or_context, 'author', getattr(interaction_or_context, 'user', None))
-        self.user = getattr(interaction_or_context, 'user', None)
-        
-    async def send(self, content=None, embed=None, view=None, ephemeral=False):
-        """Send a message using the appropriate method."""
-        try:
-            if hasattr(self.original, 'response') and not self.original.response.is_done():
-                await self.original.response.send_message(content=content, embed=embed, view=view, ephemeral=ephemeral)
-                return None
-            elif hasattr(self.original, 'followup'):
-                return await self.original.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
-            elif hasattr(self.original, 'channel') and self.original.channel:
-                return await self.original.channel.send(content=content, embed=embed, view=view)
-            else:
-                raise ValueError("No valid send method available")
-        except Exception as e:
-            print(f"Error sending message: {e}")
-            # Fallback to channel send if available
-            if self.channel:
-                return await self.channel.send(content=content, embed=embed, view=view)
-            raise
-
 # --- Cookie Management ---
 def get_cookies_content():
     """Get cookies content from multiple environment variables if needed."""
@@ -129,12 +100,11 @@ def create_temp_cookies_file():
         print("No valid cookies content to write to file")
         return None
         
-    # Create a temporary file with proper cleanup
+    # Create a temporary file
     temp_file = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt')
     try:
         # Write cookies content to the temporary file
         temp_file.write(cookies_content)
-        temp_file.flush()  # Ensure content is written
         temp_file.close()
         print(f"Successfully created temporary cookies file: {temp_file.name}")
         return temp_file.name
@@ -145,37 +115,18 @@ def create_temp_cookies_file():
         print(f"Traceback: {traceback.format_exc()}")
         if temp_file:
             temp_file.close()
-            try:
-                os.unlink(temp_file.name)
-            except:
-                pass
         return None
 
 def cleanup_temp_cookies_file(file_path):
-    """Clean up the temporary cookies file with proper error handling."""
+    """Clean up the temporary cookies file."""
     if file_path and os.path.exists(file_path):
         try:
             os.unlink(file_path)
-            print(f"Successfully cleaned up temporary cookies file: {file_path}")
         except Exception as e:
             print(f"Error cleaning up temporary cookies file: {e}")
-            # Don't raise the exception, just log it
 
 # Register cleanup function to run at exit
 atexit.register(lambda: cleanup_temp_cookies_file(getattr(create_temp_cookies_file, 'last_file', None)))
-
-class CookieManager:
-    """Context manager for cookie file handling."""
-    def __init__(self):
-        self.file_path = None
-        
-    def __enter__(self):
-        self.file_path = create_temp_cookies_file()
-        return self.file_path
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.file_path:
-            cleanup_temp_cookies_file(self.file_path)
 
 # --- Bot Setup ---
 # Initialize bot with required intents
@@ -301,33 +252,6 @@ class GuildPlayer:
         self.last_position = 0  # Track the last known position
         self.position_update_time = None  # Track when we last updated the position
         self.voice_client = None  # Add this line
-        self._cleanup_task = None  # Track cleanup task
-
-    def cleanup(self):
-        """Clean up player resources."""
-        try:
-            # Cancel any ongoing tasks
-            if self._cleanup_task and not self._cleanup_task.done():
-                self._cleanup_task.cancel()
-            
-            # Clear all data
-            self.queue.clear()
-            self.playback_history.clear()
-            self.current_track_url = None
-            self.current_track_info = None
-            self.player_message = None
-            self.start_time = None
-            self.last_update = None
-            self.pause_time = None
-            self.total_paused_time = 0
-            self.is_paused = False
-            self.last_position = 0
-            self.position_update_time = None
-            self.voice_client = None
-            
-            print(f"Cleaned up player for guild {self.guild.id}")
-        except Exception as e:
-            print(f"Error during player cleanup: {e}")
 
     def get_elapsed_time(self) -> float:
         """Calculate the actual elapsed time, accounting for pauses and voice client position."""
@@ -381,22 +305,6 @@ def get_player(guild: discord.Guild) -> GuildPlayer:
     if guild.id not in players:
         players[guild.id] = GuildPlayer(guild)
     return players[guild.id]
-
-def cleanup_player(guild_id: int):
-    """Clean up and remove a player from the global dictionary."""
-    if guild_id in players:
-        try:
-            players[guild_id].cleanup()
-            del players[guild_id]
-            print(f"Removed player for guild {guild_id}")
-        except Exception as e:
-            print(f"Error cleaning up player for guild {guild_id}: {e}")
-
-def cleanup_all_players():
-    """Clean up all players. Used during shutdown."""
-    guild_ids = list(players.keys())
-    for guild_id in guild_ids:
-        cleanup_player(guild_id)
 
 # --- UI Controls View ---
 class MusicControls(discord.ui.View):
@@ -466,8 +374,7 @@ class MusicControls(discord.ui.View):
                 # If not playing but we have a queue, start playing
                 if player.queue:
                     next_url = player.queue.pop(0)
-                    ctx = BotContext(interaction)
-                    await play_track(ctx, next_url)
+                    await play_track(await commands.Context.from_interaction(interaction), next_url)
                     await self.handle_interaction(interaction, "▶️ Starting playback.")
                 else:
                     await self.handle_interaction(interaction, "❌ Nothing in queue to play.")
@@ -481,8 +388,7 @@ class MusicControls(discord.ui.View):
         elif voice_client and not voice_client.is_playing() and player.queue:
             # If not playing but we have a queue, start playing
             next_url = player.queue.pop(0)
-            ctx = BotContext(interaction)
-            await play_track(ctx, next_url)
+            await play_track(await commands.Context.from_interaction(interaction), next_url)
             await self.handle_interaction(interaction, "▶️ Starting next track.")
         else:
             await self.handle_interaction(interaction, "❌ Nothing to skip.")
@@ -717,21 +623,19 @@ async def play_next(ctx):
 
 async def play_track(ctx, url: str, msg_handler=None):
     """Plays a single track from a URL."""
-    # Handle both Context and Interaction objects using BotContext wrapper
-    if isinstance(ctx, BotContext):
-        bot_ctx = ctx
+    # Handle both Context and Interaction objects
+    if hasattr(ctx, 'guild'):
+        guild = ctx.guild
+        author = getattr(ctx, 'author', getattr(ctx, 'user', None))
+        channel = getattr(ctx, 'channel', None)
     else:
-        bot_ctx = BotContext(ctx)
-    
-    guild = bot_ctx.guild
-    author = bot_ctx.author
-    channel = bot_ctx.channel
-    
-    if not guild:
-        raise ValueError("No guild found in context")
+        guild = ctx.guild
+        author = getattr(ctx, 'user', None)
+        channel = getattr(ctx, 'channel', None)
     
     player = get_player(guild)
     voice_client = guild.voice_client
+    temp_cookies_file = None
 
     try:
         print(f"\n=== Starting play_track ===")
@@ -771,261 +675,377 @@ async def play_track(ctx, url: str, msg_handler=None):
         print(f"Player state reset - start time: {player.start_time}")
         print(f"Current track URL set to: {player.current_track_url}")
         
-        # EXTRACT VIDEO INFO FIRST (before connecting to voice)
-        print(f"\n=== Extracting video info BEFORE voice connection ===")
-        
-        # Use CookieManager for proper cleanup
-        with CookieManager() as temp_cookies_file:
-            # Define extraction strategies - optimized for speed
-            extraction_strategies = [
-                {
-                    'name': 'Fast Web Client',
-                    'options': {
-                        'quiet': True,
-                        'no_warnings': True,
-                        'extract_flat': False,
-                        'format': 'bestaudio/best',
-                        'socket_timeout': 15,  # Reduced timeout
-                        'retries': 3,  # Reduced retries
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                            'Accept-Language': 'en-US,en;q=0.5',
-                            'Accept-Encoding': 'gzip, deflate',
-                            'Connection': 'keep-alive',
-                            'Upgrade-Insecure-Requests': '1',
-                        },
-                        'extractor_args': {
-                            'youtube': {
-                                'player_client': ['web'],
-                                'player_skip': ['js', 'configs'],
-                                'youtubetab': {'skip': 'authcheck'}
-                            }
-                        }
-                    }
-                },
-                {
-                    'name': 'Fast Mobile Client',
-                    'options': {
-                        'quiet': True,
-                        'no_warnings': True,
-                        'extract_flat': False,
-                        'format': 'bestaudio/best',
-                        'socket_timeout': 15,
-                        'retries': 3,
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                            'Accept-Language': 'en-US,en;q=0.5',
-                            'Accept-Encoding': 'gzip, deflate',
-                            'Connection': 'keep-alive',
-                        },
-                        'extractor_args': {
-                            'youtube': {
-                                'player_client': ['android'],
-                                'player_skip': ['js', 'configs'],
-                                'youtubetab': {'skip': 'authcheck'}
-                            }
-                        }
+        # Connect to voice channel if not already connected
+        if not voice_client:
+            if not author.voice:
+                error_msg = "❗ You must be in a voice channel to play music."
+                print(f"Sending error: {error_msg}")
+                if msg_handler:
+                    await msg_handler.send(error_msg)
+                elif hasattr(ctx, 'channel') and ctx.channel:
+                    await ctx.channel.send(error_msg)
+                else:
+                    await ctx.followup.send(error_msg, ephemeral=True)
+                return
+            channel = author.voice.channel
+            print(f"Connecting to voice channel: {channel.name}")
+            print(f"Channel ID: {channel.id}")
+            print(f"Guild ID: {guild.id}")
+            print(f"Bot permissions in channel: {channel.permissions_for(guild.me)}")
+            
+            # Check if bot has necessary permissions
+            required_permissions = [
+                'connect',
+                'speak'
+            ]
+            missing_permissions = []
+            bot_permissions = channel.permissions_for(guild.me)
+            
+            for permission in required_permissions:
+                if not getattr(bot_permissions, permission, False):
+                    missing_permissions.append(permission)
+            
+            if missing_permissions:
+                error_msg = f"❌ Bot is missing required permissions: {', '.join(missing_permissions)}"
+                print(f"Missing permissions: {missing_permissions}")
+                if msg_handler:
+                    await msg_handler.send(error_msg)
+                elif hasattr(ctx, 'channel') and ctx.channel:
+                    await ctx.channel.send(error_msg)
+                else:
+                    await ctx.followup.send(error_msg, ephemeral=True)
+                return
+            
+            # Connect to voice channel
+            print(f"Connecting to voice channel: {channel.name}")
+            print(f"Channel ID: {channel.id}")
+            print(f"Guild ID: {guild.id}")
+            print(f"Bot permissions in channel: {channel.permissions_for(guild.me)}")
+            
+            try:
+                print("Attempting voice connection...")
+                print(f"Channel type: {type(channel)}")
+                print(f"Channel permissions: {channel.permissions_for(guild.me)}")
+                print(f"Bot user: {guild.me}")
+                print(f"Bot status: {guild.me.status}")
+                
+                # Simple connection approach - no complex retry logic
+                voice_client = await channel.connect(
+                    timeout=30.0,
+                    self_deaf=True, 
+                    self_mute=False
+                )
+                print("Successfully connected to voice channel")
+                
+            except Exception as e:
+                print(f"Failed to connect to voice channel: {e}")
+                print(f"Error type: {type(e)}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
+                
+                # Provide a more specific error message based on the error type
+                if "timeout" in str(e).lower():
+                    error_msg = "❌ Voice connection timed out. Please try again."
+                elif "permission" in str(e).lower():
+                    error_msg = "❌ Permission denied. Make sure the bot has permission to join voice channels."
+                elif "unavailable" in str(e).lower():
+                    error_msg = "❌ Voice channel is unavailable. Please try a different channel."
+                else:
+                    error_msg = f"❌ Failed to connect to voice channel: {str(e)}"
+                
+                if msg_handler:
+                    await msg_handler.send(error_msg)
+                elif hasattr(ctx, 'channel') and ctx.channel:
+                    await ctx.channel.send(error_msg)
+                else:
+                    await ctx.followup.send(error_msg, ephemeral=True)
+                return
+
+        # Create temporary cookies file
+        temp_cookies_file = create_temp_cookies_file()
+        create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
+
+        # Add cookies file to yt-dlp options if available
+        if temp_cookies_file:
+            ydl_opts['cookiefile'] = temp_cookies_file
+
+        # Create enhanced yt-dlp options for direct video extraction
+        enhanced_ydl_opts = ydl_opts.copy()
+        enhanced_ydl_opts.update({
+            'quiet': True,  # Reduce logging to avoid detection
+            'no_warnings': True,  # Suppress warnings
+            'extract_flat': False,  # We want full extraction for direct videos
+            'format': 'best[height<=720]/best',  # More compatible format selection
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com',
+            },
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web'],  # Try web client first
+                    'player_skip': ['js', 'configs'],
+                    'player_params': {
+                        'hl': 'en',
+                        'gl': 'US',
                     }
                 }
-            ]
+            },
+            'socket_timeout': 60,  # Increase timeout
+            'retries': 15,  # More retries
+            'fragment_retries': 15,
+            'extractor_retries': 15,
+        })
+
+        # Extract video information
+        print(f"\n=== Extracting video info for: {url} ===")
+        
+        # Try multiple extraction strategies
+        extraction_strategies = [
+            {
+                'name': 'Enhanced Web Client',
+                'options': enhanced_ydl_opts.copy()
+            },
+            {
+                'name': 'Android Client',
+                'options': enhanced_ydl_opts.copy()
+            },
+            {
+                'name': 'Minimal Headers',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'best[height<=720]/best',
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'socket_timeout': 30,
+                    'retries': 10,
+                }
+            },
+            {
+                'name': 'Mobile Client',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'best[height<=720]/best',
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'socket_timeout': 30,
+                    'retries': 10,
+                }
+            },
+            {
+                'name': 'Skip Auth Check',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'best[height<=720]/best',
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['web'],
+                            'player_skip': ['js'],
+                        },
+                        'youtubetab': {
+                            'skip': ['authcheck']
+                        }
+                    },
+                    'socket_timeout': 30,
+                    'retries': 10,
+                }
+            },
+            {
+                'name': 'No Format Restriction',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'best',  # Let yt-dlp choose any available format
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'socket_timeout': 30,
+                    'retries': 10,
+                }
+            }
+        ]
+        
+        # Add cookies to all strategies
+        for strategy in extraction_strategies:
+            if temp_cookies_file:
+                strategy['options']['cookiefile'] = temp_cookies_file
+        
+        # Try each strategy
+        info = None
+        last_error = None
+        
+        for i, strategy in enumerate(extraction_strategies, 1):
+            print(f"Trying strategy {i}/6: {strategy['name']}")
             
-            # Add cookies to all strategies
-            for strategy in extraction_strategies:
+            # Configure strategy-specific options
+            if strategy['name'] == 'Android Client':
+                strategy['options']['extractor_args'] = {
+                    'youtube': {
+                        'player_client': ['android'],
+                        'player_skip': ['js'],
+                    },
+                    'youtubetab': {
+                        'skip': ['authcheck']
+                    }
+                }
+            elif strategy['name'] == 'Minimal Headers':
+                # Add cookies if available
+                if temp_cookies_file:
+                    strategy['options']['cookiefile'] = temp_cookies_file
+                # Add auth check skip
+                strategy['options']['extractor_args'] = {
+                    'youtubetab': {
+                        'skip': ['authcheck']
+                    }
+                }
+            elif strategy['name'] == 'Mobile Client':
+                strategy['options']['extractor_args'] = {
+                    'youtube': {
+                        'player_client': ['android'],
+                        'player_skip': ['js', 'configs'],
+                    },
+                    'youtubetab': {
+                        'skip': ['authcheck']
+                    }
+                }
+                if temp_cookies_file:
+                    strategy['options']['cookiefile'] = temp_cookies_file
+            elif strategy['name'] == 'Enhanced Web Client':
+                # Add auth check skip to enhanced web client
+                if 'extractor_args' not in strategy['options']:
+                    strategy['options']['extractor_args'] = {}
+                strategy['options']['extractor_args']['youtubetab'] = {
+                    'skip': ['authcheck']
+                }
+            elif strategy['name'] == 'Skip Auth Check':
+                # Add cookies if available
                 if temp_cookies_file:
                     strategy['options']['cookiefile'] = temp_cookies_file
             
-            # Try each strategy
-            info = None
-            last_error = None
-            
-            for i, strategy in enumerate(extraction_strategies, 1):
-                print(f"Trying strategy {i}/2: {strategy['name']}")
-                
-                try:
-                    with yt_dlp.YoutubeDL(strategy['options']) as ydl:
-                        print(f"Created yt-dlp instance for {strategy['name']}")
-                        info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                        print(f"✓ {strategy['name']} extraction successful")
-                        break  # Success! Exit the loop
-                        
-                except yt_dlp.utils.DownloadError as e:
-                    error_msg = str(e)
-                    print(f"✗ {strategy['name']} failed: {error_msg}")
-                    last_error = e
+            try:
+                with yt_dlp.YoutubeDL(strategy['options']) as ydl:
+                    print(f"Created yt-dlp instance for {strategy['name']}")
+                    info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                    print(f"✓ {strategy['name']} extraction successful")
+                    break  # Success! Exit the loop
                     
-                    # Check if it's a format issue and try next strategy
-                    if "Requested format is not available" in error_msg:
-                        print(f"Format issue for {strategy['name']}, trying next strategy...")
-                        continue
-                    else:
-                        # For other errors, try next strategy
-                        continue
-                        
-                except Exception as e:
-                    print(f"✗ {strategy['name']} failed with unexpected error: {e}")
-                    last_error = e
+            except yt_dlp.utils.DownloadError as e:
+                last_error = e
+                print(f"✗ {strategy['name']} failed: {str(e)}")
+                if "Sign in" in str(e):
+                    print(f"Bot detection triggered for {strategy['name']}, trying next strategy...")
                     continue
-            
-            if not info:
-                error_msg = f"Failed to extract video information: {last_error}"
-                print(f"❌ {error_msg}")
-                if msg_handler:
-                    await msg_handler.send(f"❌ Error: {error_msg}")
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(f"❌ Error: {error_msg}")
+                elif "Video unavailable" in str(e):
+                    raise ValueError("This video is unavailable or private")
+                elif "Requested format is not available" in str(e):
+                    print(f"Format issue for {strategy['name']}, trying next strategy...")
+                    continue
                 else:
-                    await ctx.followup.send(f"❌ Error: {error_msg}", ephemeral=True)
-                return
-            
-            print(f"Video info extracted successfully with {strategy['name']}")
-            
-            # Validate the info dictionary
-            if not info:
-                print("No info returned from yt-dlp")
-                raise ValueError("No video information found")
-
-            # Ensure we have required fields
-            if not all(key in info for key in ['url', 'title']):
-                print(f"Video missing required fields: {info}")
-                raise ValueError("Incomplete video information")
-
-            # Add webpage_url field for consistency
-            info['webpage_url'] = url
-            
-            # Set the track info in the player
-            player.current_track_info = info
-            
-            print(f"\n=== Video Info Available ===")
-            print(f"Title: {info.get('title', 'Unknown')}")
-            print(f"Duration: {info.get('duration', 'Unknown')}")
-            print(f"Uploader: {info.get('uploader', 'Unknown')}")
-            print(f"View count: {info.get('view_count', 'Unknown')}")
-            print(f"Like count: {info.get('like_count', 'Not found')}")
-            print(f"Using webpage URL: {info.get('webpage_url', url)}")
-            print(f"Using audio URL: {info.get('url', 'Not found')[:100]}...")
-            
-            # NOW connect to voice channel (after video extraction is complete)
-            if not voice_client:
-                if not author.voice:
-                    error_msg = "❗ You must be in a voice channel to play music."
-                    print(f"Sending error: {error_msg}")
-                    if msg_handler:
-                        await msg_handler.send(error_msg)
-                    elif hasattr(ctx, 'channel') and ctx.channel:
-                        await ctx.channel.send(error_msg)
-                    else:
-                        await ctx.followup.send(error_msg, ephemeral=True)
-                    return
-                channel = author.voice.channel
-                print(f"Connecting to voice channel: {channel.name}")
-                print(f"Channel ID: {channel.id}")
-                print(f"Guild ID: {guild.id}")
-                print(f"Bot permissions in channel: {channel.permissions_for(guild.me)}")
-                
-                # Check if bot's Discord session is still valid
-                if not bot.is_ready():
-                    error_msg = "❌ Bot is not ready. Please try again."
-                    print("Bot is not ready, cannot connect to voice")
-                    if msg_handler:
-                        await msg_handler.send(error_msg)
-                    elif hasattr(ctx, 'channel') and ctx.channel:
-                        await ctx.channel.send(error_msg)
-                    else:
-                        await ctx.followup.send(error_msg, ephemeral=True)
-                    return
-                
-                # Check if bot has necessary permissions
-                required_permissions = [
-                    'connect',
-                    'speak'
-                ]
-                missing_permissions = []
-                bot_permissions = channel.permissions_for(guild.me)
-                
-                for permission in required_permissions:
-                    if not getattr(bot_permissions, permission, False):
-                        missing_permissions.append(permission)
-                
-                if missing_permissions:
-                    error_msg = f"❌ Bot is missing required permissions: {', '.join(missing_permissions)}"
-                    print(f"Missing permissions: {missing_permissions}")
-                    if msg_handler:
-                        await msg_handler.send(error_msg)
-                    elif hasattr(ctx, 'channel') and ctx.channel:
-                        await ctx.channel.send(error_msg)
-                    else:
-                        await ctx.followup.send(error_msg, ephemeral=True)
-                    return
-                
-                # Connect to voice channel
-                print(f"Connecting to voice channel: {channel.name}")
-                print(f"Channel ID: {channel.id}")
-                print(f"Guild ID: {guild.id}")
-                print(f"Bot permissions in channel: {channel.permissions_for(guild.me)}")
-                
-                try:
-                    print("Attempting voice connection...")
-                    print(f"Channel type: {type(channel)}")
-                    print(f"Channel permissions: {channel.permissions_for(guild.me)}")
-                    print(f"Bot user: {guild.me}")
-                    print(f"Bot status: {guild.me.status}")
-                    
-                    # Add a small delay before connecting to avoid rate limiting
-                    await asyncio.sleep(1.0)
-                    
-                    # Simple connection approach - no complex retry logic
-                    voice_client = await channel.connect(
-                        timeout=30.0,
-                        self_deaf=True, 
-                        self_mute=False
-                    )
-                    print("Successfully connected to voice channel")
-                    
-                except discord.errors.ConnectionClosed as e:
-                    print(f"Discord connection closed: {e}")
-                    if e.code == 4006:
-                        error_msg = "❌ Discord session error (4006). The bot may need to be restarted."
-                        print("🔍 WebSocket Code 4006: Session is no longer valid")
-                    else:
-                        error_msg = f"❌ Discord connection error: {e}"
-                    
-                    if msg_handler:
-                        await msg_handler.send(error_msg)
-                    elif hasattr(ctx, 'channel') and ctx.channel:
-                        await ctx.channel.send(error_msg)
-                    else:
-                        await ctx.followup.send(error_msg, ephemeral=True)
-                    return
-                    
-                except Exception as e:
-                    print(f"Failed to connect to voice channel: {e}")
-                    print(f"Error type: {type(e)}")
-                    import traceback
-                    print(f"Traceback: {traceback.format_exc()}")
-                    
-                    # Provide a more specific error message based on the error type
-                    if "timeout" in str(e).lower():
-                        error_msg = "❌ Voice connection timed out. Please try again."
-                    elif "permission" in str(e).lower():
-                        error_msg = "❌ Permission denied. Make sure the bot has permission to join voice channels."
-                    elif "unavailable" in str(e).lower():
-                        error_msg = "❌ Voice channel is unavailable. Please try a different channel."
-                    else:
-                        error_msg = f"❌ Failed to connect to voice channel: {str(e)}"
-                    
-                    if msg_handler:
-                        await msg_handler.send(error_msg)
-                    elif hasattr(ctx, 'channel') and ctx.channel:
-                        await ctx.channel.send(error_msg)
-                    else:
-                        await ctx.followup.send(error_msg, ephemeral=True)
-                    return
-
-        # Now that we have both video info and voice connection, start playback
-        print(f"Track info set - Title: {info.get('title', 'Unknown')}, Duration: {info.get('duration', 'Unknown')}")
+                    print(f"Other error for {strategy['name']}: {str(e)}")
+                    continue
+            except Exception as e:
+                last_error = e
+                print(f"✗ {strategy['name']} failed with exception: {str(e)}")
+                continue
         
+        # If all strategies failed
+        if info is None:
+            print("All extraction strategies failed")
+            raise ValueError("Could not find suitable audio format for this video. The video may be restricted or unavailable.")
+        
+        print(f"Video info extracted successfully with {strategy['name']}")
+        
+        # Validate the info dictionary
+        if not info:
+            print("No info returned from yt-dlp")
+            raise ValueError("No video information found")
+
+        # Ensure voice client is still connected
+        if voice_client and not voice_client.is_connected():
+            print("Voice client disconnected during extraction, attempting to reconnect...")
+            try:
+                voice_client = await channel.connect(timeout=20.0, self_deaf=True)
+                print("Successfully reconnected to voice channel")
+            except Exception as e:
+                print(f"Failed to reconnect to voice channel: {e}")
+                raise ValueError(f"Voice connection lost and could not reconnect: {str(e)}")
+
+        # Ensure we have required fields
+        if not all(key in info for key in ['url', 'title']):
+            print(f"Video missing required fields: {info}")
+            raise ValueError("Incomplete video information")
+
+        # Add webpage_url field for consistency
+        info['webpage_url'] = url
+
+        # Process the video info
+        print("\n=== Video Info Available ===")
+        print(f"Title: {info.get('title', 'Not found')}")
+        print(f"Duration: {info.get('duration', 'Not found')}")
+        print(f"Uploader: {info.get('uploader', 'Not found')}")
+        print(f"View count: {info.get('view_count', 'Not found')}")
+        print(f"Like count: {info.get('like_count', 'Not found')}")
+
+        # Get the audio stream URL
+        if 'url' not in info:
+            print("No direct URL found, extracting format...")
+            formats = info.get('formats', [])
+            audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+            if audio_formats:
+                best_audio = audio_formats[-1]
+                info['url'] = best_audio['url']
+            else:
+                raise ValueError("No suitable audio format found")
+
+        print(f"Using webpage URL: {info.get('webpage_url', 'Not found')}")
+        print(f"Using audio URL: {info.get('url', 'Not found')[:100]}...")
+
+        # After successful extraction, update the track info
+        player.current_track_info = info
+        if url not in player.playback_history:
+            player.playback_history.append(url)
+        
+        print(f"Track info set - Title: {info.get('title')}, Duration: {info.get('duration')}")
+
         # Create audio source
         try:
             print("Creating audio source...")
@@ -1041,74 +1061,83 @@ async def play_track(ctx, url: str, msg_handler=None):
             
             print("Audio source created successfully")
             
-            # Ensure voice client is still connected before playing
-            if not voice_client or not voice_client.is_connected():
-                print("Voice client disconnected, cannot start playback")
-                raise ValueError("Voice connection lost during video extraction")
-            
             # Start playback
             print("Starting playback...")
-            
-            # Create a proper async callback for playback completion
-            async def playback_complete_callback(error):
-                try:
-                    await handle_playback_complete(ctx, error)
-                except Exception as e:
-                    print(f"Error in playback completion callback: {e}")
-            
-            # Use the bot's event loop to schedule the callback
-            def after_callback(error):
-                if error:
-                    print(f"Playback error: {error}")
-                # Schedule the async callback in the bot's event loop
-                asyncio.create_task(playback_complete_callback(error))
-            
-            voice_client.play(source, after=after_callback)
+            voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(
+                handle_playback_complete(ctx, e), bot.loop
+            ))
             print("Playback started successfully")
             
-            # Create and send player embed
-            embed = await create_player_embed(info, author, player)
-            if msg_handler:
-                player.player_message = await msg_handler.send(embed=embed)
+            # Start progress updates after confirming playback has started
+            if voice_client.is_playing():
+                print("Starting progress update task")
+                # Cancel any existing progress task
+                if hasattr(player, 'progress_task') and player.progress_task:
+                    try:
+                        player.progress_task.cancel()
+                    except:
+                        pass
+                player.progress_task = bot.loop.create_task(update_progress(ctx, player))
+                print("Progress update task started")
             else:
-                player.player_message = await bot_ctx.send(embed=embed, view=MusicControls())
-            
-            # Start progress updates
-            player._cleanup_task = asyncio.create_task(update_progress(bot_ctx, player))
+                print("Warning: Voice client not playing after source creation")
             
         except Exception as e:
-            print(f"Error creating/starting audio source: {e}")
+            print(f"Error creating/starting audio source: {str(e)}")
             print(f"Error type: {type(e)}")
             import traceback
             print(f"Traceback: {traceback.format_exc()}")
+            # Clear current track info on error
+            player.current_track_url = None
+            player.current_track_info = None
             raise ValueError(f"Failed to start playback: {str(e)}")
+
+        # Create player message
+        try:
+            print("Creating player message")
+            embed = await create_player_embed(info, author, player)
+            view = MusicControls()
+            if hasattr(ctx, 'channel') and ctx.channel:
+                player.player_message = await ctx.channel.send(embed=embed, view=view)
+            else:
+                # For interactions, we need to use followup
+                player.player_message = await ctx.followup.send(embed=embed, view=view)
+            print("Player message sent successfully")
+        except Exception as e:
+            print(f"Error creating player message: {e}")
+            # Don't raise here, just log the error
+            # The playback will continue even if the message fails
 
     except Exception as e:
         print(f"\n=== Play Track Error ===")
-        print(f"Error: {e}")
+        print(f"Error: {str(e)}")
         print(f"Error type: {type(e)}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
         
-        # Send error message
-        error_msg = f"❌ Error playing track: {str(e)}"
-        if msg_handler:
-            await msg_handler.send(error_msg)
-        else:
-            await bot_ctx.send(error_msg, ephemeral=True)
-        
-        # Clean up player state
-        player.current_track_url = None
-        player.current_track_info = None
-        
+        # Ensure we have a non-empty error message
+        error_msg = str(e) if str(e).strip() else f"Unknown error occurred (type: {type(e).__name__})"
+        try:
+            if msg_handler:
+                await msg_handler.send(f"❌ Error playing track: {error_msg}")
+            else:
+                # Fallback to direct message send if no msg_handler
+                if isinstance(ctx, commands.Context):
+                    await ctx.channel.send(f"❌ Error playing track: {error_msg}")
+                else:
+                    await ctx.followup.send(f"❌ Error playing track: {error_msg}", ephemeral=True)
+        except Exception as send_error:
+            print(f"Failed to send error message: {send_error}")
+            print(f"Send error type: {type(send_error)}")
+            print(f"Send error traceback: {traceback.format_exc()}")
+            if msg_handler:
+                print("\n=== Final Message Handler State ===")
+                print(msg_handler.get_debug_info())
+
     finally:
         # Clean up temporary cookies file
-        if temp_cookies_file and os.path.exists(temp_cookies_file):
-            try:
-                os.remove(temp_cookies_file)
-                print(f"Cleaned up temporary cookies file: {temp_cookies_file}")
-            except Exception as e:
-                print(f"Error cleaning up cookies file: {e}")
+        if temp_cookies_file:
+            cleanup_temp_cookies_file(temp_cookies_file)
 
 async def update_progress(ctx, player: GuildPlayer):
     """Updates the progress bar every 5 seconds."""
@@ -1741,6 +1770,18 @@ async def handle_playback_complete(ctx, error):
         print(f"Error type: {type(error)}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
+        
+        # Try to reconnect if it's a connection error
+        if isinstance(error, discord.errors.ConnectionClosed):
+            try:
+                # Handle both Context and Interaction objects
+                guild = getattr(ctx, 'guild', None)
+                if guild and guild.voice_client:
+                    await guild.voice_client.disconnect(force=True)
+                    await guild.voice_client.connect(reconnect=True)
+                print("Successfully reconnected to voice channel")
+            except Exception as e:
+                print(f"Failed to reconnect: {e}")
     
     print("Calling play_next from handle_playback_complete")
     await play_next(ctx)
@@ -1753,21 +1794,6 @@ async def on_ready():
     bot.add_view(MusicControls())  # Now valid with custom_ids
     await bot.tree.sync()
     print("🔁 Commands synced")
-
-@bot.event
-async def on_disconnect():
-    """Called when the bot disconnects from Discord."""
-    print("⚠️ Bot disconnected from Discord")
-
-@bot.event
-async def on_connect():
-    """Called when the bot connects to Discord."""
-    print("🔗 Bot connected to Discord")
-
-@bot.event
-async def on_resumed():
-    """Called when the bot resumes a connection."""
-    print("🔄 Bot resumed connection to Discord")
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -1787,6 +1813,16 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 except discord.NotFound:
                     pass
             
+            # Try to reconnect if it was an unexpected disconnect
+            try:
+                if member.guild.voice_client and member.guild.voice_client.is_connected():
+                    await member.guild.voice_client.disconnect(force=True)
+                await member.guild.voice_client.connect(reconnect=True)
+                print("Successfully reconnected to voice channel")
+            except Exception as e:
+                print(f"Failed to reconnect to voice channel: {e}")
+                players.pop(guild_id, None)  # Clean up the player instance if reconnection fails
+
 def force_kill_python_processes():
     """Force kill any remaining Python processes."""
     current_pid = os.getpid()
@@ -1824,42 +1860,15 @@ signal.signal(signal.SIGTERM, signal_handler)
 if __name__ == "__main__":
     try:
         load_dotenv()
-        
-        # Check if token exists
-        token = os.getenv("DISCORD_TOKEN")
-        if not token:
-            print("❌ DISCORD_TOKEN not found in environment variables")
-            sys.exit(1)
-        
-        # Validate token format (basic check)
-        if len(token) < 50:
-            print("❌ Discord token appears to be too short")
-            sys.exit(1)
-        
-        print("🔑 Token validation passed")
-        print("🚀 Starting bot...")
-        
-        bot.run(token)
+        bot.run(os.getenv("DISCORD_TOKEN"))
     except KeyboardInterrupt:
         print("\n⚠️ Keyboard interrupt received. Shutting down...")
         try:
             asyncio.run(bot.close())
         except:
             pass
-    except discord.errors.LoginFailure:
-        print("❌ Failed to login: Invalid token")
-        sys.exit(1)
-    except discord.errors.ConnectionClosed as e:
-        print(f"❌ Discord connection closed: {e}")
-        if e.code == 4006:
-            print("🔍 WebSocket Code 4006: Session is no longer valid")
-            print("💡 This usually means the bot token is invalid or the bot is connecting from multiple locations")
-        sys.exit(1)
     except Exception as e:
         print(f"\n❌ Error running bot: {e}")
-        print(f"Error type: {type(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
     finally:
         force_kill_python_processes()
         print("✅ Bot process terminated.")
