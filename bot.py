@@ -814,56 +814,14 @@ async def play_track(ctx, url: str, msg_handler=None):
         # Try multiple extraction strategies
         extraction_strategies = [
             {
-                'name': 'Enhanced Web Client',
-                'options': enhanced_ydl_opts.copy()
-            },
-            {
-                'name': 'Android Client',
-                'options': enhanced_ydl_opts.copy()
-            },
-            {
-                'name': 'Minimal Headers',
+                'name': 'Fast Web Client',
                 'options': {
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
-                    'format': 'best[height<=720]/best',
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Connection': 'keep-alive',
-                    },
-                    'socket_timeout': 30,
-                    'retries': 10,
-                }
-            },
-            {
-                'name': 'Mobile Client',
-                'options': {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'format': 'best[height<=720]/best',
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Connection': 'keep-alive',
-                    },
-                    'socket_timeout': 30,
-                    'retries': 10,
-                }
-            },
-            {
-                'name': 'Skip Auth Check',
-                'options': {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'format': 'best[height<=720]/best',
+                    'format': 'bestaudio/best',
+                    'socket_timeout': 15,  # Reduced timeout
+                    'retries': 3,  # Reduced retries
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -874,32 +832,39 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'extractor_args': {
                         'youtube': {
                             'player_client': ['web'],
-                            'player_skip': ['js'],
+                            'player_skip': ['js', 'configs'],
                         },
                         'youtubetab': {
                             'skip': ['authcheck']
                         }
-                    },
-                    'socket_timeout': 30,
-                    'retries': 10,
+                    }
                 }
             },
             {
-                'name': 'No Format Restriction',
+                'name': 'Fast Mobile Client',
                 'options': {
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
-                    'format': 'best',  # Let yt-dlp choose any available format
+                    'format': 'bestaudio/best',
+                    'socket_timeout': 15,  # Reduced timeout
+                    'retries': 3,  # Reduced retries
                     'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                         'Accept-Language': 'en-US,en;q=0.5',
                         'Accept-Encoding': 'gzip, deflate',
                         'Connection': 'keep-alive',
                     },
-                    'socket_timeout': 30,
-                    'retries': 10,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['android'],
+                            'player_skip': ['js', 'configs'],
+                        },
+                        'youtubetab': {
+                            'skip': ['authcheck']
+                        }
+                    }
                 }
             }
         ]
@@ -914,52 +879,7 @@ async def play_track(ctx, url: str, msg_handler=None):
         last_error = None
         
         for i, strategy in enumerate(extraction_strategies, 1):
-            print(f"Trying strategy {i}/6: {strategy['name']}")
-            
-            # Configure strategy-specific options
-            if strategy['name'] == 'Android Client':
-                strategy['options']['extractor_args'] = {
-                    'youtube': {
-                        'player_client': ['android'],
-                        'player_skip': ['js'],
-                    },
-                    'youtubetab': {
-                        'skip': ['authcheck']
-                    }
-                }
-            elif strategy['name'] == 'Minimal Headers':
-                # Add cookies if available
-                if temp_cookies_file:
-                    strategy['options']['cookiefile'] = temp_cookies_file
-                # Add auth check skip
-                strategy['options']['extractor_args'] = {
-                    'youtubetab': {
-                        'skip': ['authcheck']
-                    }
-                }
-            elif strategy['name'] == 'Mobile Client':
-                strategy['options']['extractor_args'] = {
-                    'youtube': {
-                        'player_client': ['android'],
-                        'player_skip': ['js', 'configs'],
-                    },
-                    'youtubetab': {
-                        'skip': ['authcheck']
-                    }
-                }
-                if temp_cookies_file:
-                    strategy['options']['cookiefile'] = temp_cookies_file
-            elif strategy['name'] == 'Enhanced Web Client':
-                # Add auth check skip to enhanced web client
-                if 'extractor_args' not in strategy['options']:
-                    strategy['options']['extractor_args'] = {}
-                strategy['options']['extractor_args']['youtubetab'] = {
-                    'skip': ['authcheck']
-                }
-            elif strategy['name'] == 'Skip Auth Check':
-                # Add cookies if available
-                if temp_cookies_file:
-                    strategy['options']['cookiefile'] = temp_cookies_file
+            print(f"Trying strategy {i}/2: {strategy['name']}")
             
             try:
                 with yt_dlp.YoutubeDL(strategy['options']) as ydl:
