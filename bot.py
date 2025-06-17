@@ -14,6 +14,7 @@ import tempfile
 import atexit
 import base64
 from pathlib import Path
+import subprocess
 
 # --- Cookie Management ---
 def get_cookies_content():
@@ -821,7 +822,7 @@ async def play_track(ctx, url: str, msg_handler=None):
             'quiet': True,  # Reduce logging to avoid detection
             'no_warnings': True,  # Suppress warnings
             'extract_flat': False,  # We want full extraction for direct videos
-            'format': 'bestaudio/best',  # Let yt-dlp choose the best audio format
+            'format': 'best[height<=720]/best',  # More compatible format selection
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -873,7 +874,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
-                    'format': 'bestaudio/best',
+                    'format': 'best[height<=720]/best',
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -891,7 +892,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
-                    'format': 'bestaudio/best',
+                    'format': 'best[height<=720]/best',
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -909,7 +910,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
-                    'format': 'bestaudio/best',
+                    'format': 'best[height<=720]/best',
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -929,6 +930,24 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'socket_timeout': 30,
                     'retries': 10,
                 }
+            },
+            {
+                'name': 'No Format Restriction',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'best',  # Let yt-dlp choose any available format
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'socket_timeout': 30,
+                    'retries': 10,
+                }
             }
         ]
         
@@ -941,61 +960,60 @@ async def play_track(ctx, url: str, msg_handler=None):
         info = None
         last_error = None
         
-        for i, strategy in enumerate(extraction_strategies):
-            try:
-                print(f"Trying strategy {i+1}/{len(extraction_strategies)}: {strategy['name']}")
-                
-                # Configure strategy-specific options
-                if strategy['name'] == 'Android Client':
-                    strategy['options']['extractor_args'] = {
-                        'youtube': {
-                            'player_client': ['android'],
-                            'player_skip': ['js'],
-                        },
-                        'youtubetab': {
-                            'skip': ['authcheck']
-                        }
-                    }
-                elif strategy['name'] == 'Minimal Headers':
-                    # Add cookies if available
-                    if temp_cookies_file:
-                        strategy['options']['cookiefile'] = temp_cookies_file
-                    # Add auth check skip
-                    strategy['options']['extractor_args'] = {
-                        'youtubetab': {
-                            'skip': ['authcheck']
-                        }
-                    }
-                elif strategy['name'] == 'Mobile Client':
-                    strategy['options']['extractor_args'] = {
-                        'youtube': {
-                            'player_client': ['android'],
-                            'player_skip': ['js', 'configs'],
-                        },
-                        'youtubetab': {
-                            'skip': ['authcheck']
-                        }
-                    }
-                    if temp_cookies_file:
-                        strategy['options']['cookiefile'] = temp_cookies_file
-                elif strategy['name'] == 'Enhanced Web Client':
-                    # Add auth check skip to enhanced web client
-                    if 'extractor_args' not in strategy['options']:
-                        strategy['options']['extractor_args'] = {}
-                    strategy['options']['extractor_args']['youtubetab'] = {
+        for i, strategy in enumerate(extraction_strategies, 1):
+            print(f"Trying strategy {i}/6: {strategy['name']}")
+            
+            # Configure strategy-specific options
+            if strategy['name'] == 'Android Client':
+                strategy['options']['extractor_args'] = {
+                    'youtube': {
+                        'player_client': ['android'],
+                        'player_skip': ['js'],
+                    },
+                    'youtubetab': {
                         'skip': ['authcheck']
                     }
-                elif strategy['name'] == 'Skip Auth Check':
-                    # Add cookies if available
-                    if temp_cookies_file:
-                        strategy['options']['cookiefile'] = temp_cookies_file
+                }
+            elif strategy['name'] == 'Minimal Headers':
+                # Add cookies if available
+                if temp_cookies_file:
+                    strategy['options']['cookiefile'] = temp_cookies_file
+                # Add auth check skip
+                strategy['options']['extractor_args'] = {
+                    'youtubetab': {
+                        'skip': ['authcheck']
+                    }
+                }
+            elif strategy['name'] == 'Mobile Client':
+                strategy['options']['extractor_args'] = {
+                    'youtube': {
+                        'player_client': ['android'],
+                        'player_skip': ['js', 'configs'],
+                    },
+                    'youtubetab': {
+                        'skip': ['authcheck']
+                    }
+                }
+                if temp_cookies_file:
+                    strategy['options']['cookiefile'] = temp_cookies_file
+            elif strategy['name'] == 'Enhanced Web Client':
+                # Add auth check skip to enhanced web client
+                if 'extractor_args' not in strategy['options']:
+                    strategy['options']['extractor_args'] = {}
+                strategy['options']['extractor_args']['youtubetab'] = {
+                    'skip': ['authcheck']
+                }
+            elif strategy['name'] == 'Skip Auth Check':
+                # Add cookies if available
+                if temp_cookies_file:
+                    strategy['options']['cookiefile'] = temp_cookies_file
+            
+            with yt_dlp.YoutubeDL(strategy['options']) as ydl:
+                print(f"Created yt-dlp instance for {strategy['name']}")
+                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                print(f"✓ {strategy['name']} extraction successful")
+                break  # Success! Exit the loop
                 
-                with yt_dlp.YoutubeDL(strategy['options']) as ydl:
-                    print(f"Created yt-dlp instance for {strategy['name']}")
-                    info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                    print(f"✓ {strategy['name']} extraction successful")
-                    break  # Success! Exit the loop
-                    
             except yt_dlp.utils.DownloadError as e:
                 last_error = e
                 print(f"✗ {strategy['name']} failed: {str(e)}")
@@ -1018,15 +1036,7 @@ async def play_track(ctx, url: str, msg_handler=None):
         # If all strategies failed
         if info is None:
             print("All extraction strategies failed")
-            if last_error:
-                if "Sign in" in str(last_error):
-                    raise ValueError("YouTube bot detection blocked all extraction methods. The video may require authentication or the server IP may be flagged.")
-                elif "Requested format is not available" in str(last_error):
-                    raise ValueError("Could not find suitable audio format for this video. The video may be restricted or unavailable.")
-                else:
-                    raise ValueError(f"Failed to extract video info: {str(last_error)}")
-            else:
-                raise ValueError("Failed to extract video info with all strategies")
+            raise ValueError("Could not find suitable audio format for this video. The video may be restricted or unavailable.")
         
         print(f"Video info extracted successfully with {strategy['name']}")
         
@@ -1808,3 +1818,38 @@ if __name__ == "__main__":
         force_kill_python_processes()
         print("✅ Bot process terminated.")
         sys.exit(0)
+
+# Check and update yt-dlp version
+def update_yt_dlp():
+    """Update yt-dlp to the latest version."""
+    try:
+        print("🔧 Checking yt-dlp version...")
+        result = subprocess.run([sys.executable, "-m", "pip", "show", "yt-dlp"], 
+                              capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            print("✅ yt-dlp is installed")
+            # Try to update to latest version
+            print("🔄 Updating yt-dlp to latest version...")
+            update_result = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], 
+                                         capture_output=True, text=True, timeout=120)
+            
+            if update_result.returncode == 0:
+                print("✅ yt-dlp updated successfully")
+            else:
+                print(f"⚠️ Failed to update yt-dlp: {update_result.stderr}")
+        else:
+            print("❌ yt-dlp not found, installing...")
+            install_result = subprocess.run([sys.executable, "-m", "pip", "install", "yt-dlp"], 
+                                          capture_output=True, text=True, timeout=120)
+            
+            if install_result.returncode == 0:
+                print("✅ yt-dlp installed successfully")
+            else:
+                print(f"❌ Failed to install yt-dlp: {install_result.stderr}")
+                
+    except Exception as e:
+        print(f"⚠️ Error updating yt-dlp: {e}")
+
+# Update yt-dlp on startup
+update_yt_dlp()
