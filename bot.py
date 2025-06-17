@@ -550,9 +550,15 @@ async def create_player_embed(info: dict, requester: discord.Member, player: Gui
         return embed
 
 # --- Core Playback Logic ---
-async def play_next(ctx: commands.Context):
+async def play_next(ctx):
     """The main playback loop that plays the next song in the queue."""
-    player = get_player(ctx.guild)
+    # Handle both Context and Interaction objects
+    guild = getattr(ctx, 'guild', None)
+    if not guild:
+        print("Error: No guild found in context")
+        return
+        
+    player = get_player(guild)
     
     try:
         print("\n=== Starting play_next ===")
@@ -589,10 +595,11 @@ async def play_next(ctx: commands.Context):
             
             # Optional: Disconnect after a period of inactivity
             await asyncio.sleep(180)  # Wait 3 minutes
-            if ctx.guild.voice_client and not ctx.guild.voice_client.is_playing() and not player.queue:
+            voice_client = guild.voice_client
+            if voice_client and not voice_client.is_playing() and not player.queue:
                 print("Disconnecting due to inactivity")
-                await ctx.guild.voice_client.disconnect()
-                players.pop(ctx.guild.id, None)
+                await voice_client.disconnect()
+                players.pop(guild.id, None)
 
     except Exception as e:
         print(f"\n=== CRITICAL ERROR in play_next ===")
@@ -603,7 +610,7 @@ async def play_next(ctx: commands.Context):
         
         # Try to send error message
         try:
-            if isinstance(ctx, commands.Context):
+            if hasattr(ctx, 'channel') and ctx.channel:
                 await ctx.channel.send(f"❌ A critical playback error occurred: {str(e)}")
             else:
                 await ctx.followup.send(f"❌ A critical playback error occurred: {str(e)}", ephemeral=True)
@@ -612,10 +619,20 @@ async def play_next(ctx: commands.Context):
             print(f"Send error type: {type(send_error)}")
             print(f"Send error traceback: {traceback.format_exc()}")
 
-async def play_track(ctx: commands.Context, url: str, msg_handler=None):
+async def play_track(ctx, url: str, msg_handler=None):
     """Plays a single track from a URL."""
-    player = get_player(ctx.guild)
-    voice_client = ctx.guild.voice_client
+    # Handle both Context and Interaction objects
+    if hasattr(ctx, 'guild'):
+        guild = ctx.guild
+        author = getattr(ctx, 'author', getattr(ctx, 'user', None))
+        channel = getattr(ctx, 'channel', None)
+    else:
+        guild = ctx.guild
+        author = getattr(ctx, 'user', None)
+        channel = getattr(ctx, 'channel', None)
+    
+    player = get_player(guild)
+    voice_client = guild.voice_client
     temp_cookies_file = None
 
     try:
@@ -658,17 +675,17 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
         
         # Connect to voice channel if not already connected
         if not voice_client:
-            if not ctx.author.voice:
+            if not author.voice:
                 error_msg = "❗ You must be in a voice channel to play music."
                 print(f"Sending error: {error_msg}")
                 if msg_handler:
                     await msg_handler.send(error_msg)
-                elif isinstance(ctx, commands.Context):
+                elif hasattr(ctx, 'channel') and ctx.channel:
                     await ctx.channel.send(error_msg)
                 else:
                     await ctx.followup.send(error_msg, ephemeral=True)
                 return
-            channel = ctx.author.voice.channel
+            channel = author.voice.channel
             print(f"Connecting to voice channel: {channel.name}")
             
             # Try to connect with better error handling
@@ -680,7 +697,7 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
                 error_msg = f"❌ Failed to connect to voice channel: {str(e)}"
                 if msg_handler:
                     await msg_handler.send(error_msg)
-                elif isinstance(ctx, commands.Context):
+                elif hasattr(ctx, 'channel') and ctx.channel:
                     await ctx.channel.send(error_msg)
                 else:
                     await ctx.followup.send(error_msg, ephemeral=True)
@@ -812,9 +829,13 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
         # Create player message
         try:
             print("Creating player message")
-            embed = await create_player_embed(info, ctx.author, player)
+            embed = await create_player_embed(info, author, player)
             view = MusicControls()
-            player.player_message = await ctx.channel.send(embed=embed, view=view)
+            if hasattr(ctx, 'channel') and ctx.channel:
+                player.player_message = await ctx.channel.send(embed=embed, view=view)
+            else:
+                # For interactions, we need to use followup
+                player.player_message = await ctx.followup.send(embed=embed, view=view)
             print("Player message sent successfully")
         except Exception as e:
             print(f"Error creating player message: {e}")
@@ -828,18 +849,14 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
         
-        # Clear current track info on error
-        player.current_track_url = None
-        player.current_track_info = None
-        
-        # Send error message
+        # Ensure we have a non-empty error message
         error_msg = str(e) if str(e).strip() else f"Unknown error occurred (type: {type(e).__name__})"
         try:
             if msg_handler:
                 await msg_handler.send(f"❌ Error playing track: {error_msg}")
             else:
                 # Fallback to direct message send if no msg_handler
-                if isinstance(ctx, commands.Context):
+                if hasattr(ctx, 'channel') and ctx.channel:
                     await ctx.channel.send(f"❌ Error playing track: {error_msg}")
                 else:
                     await ctx.followup.send(f"❌ Error playing track: {error_msg}", ephemeral=True)
@@ -853,8 +870,17 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
         if temp_cookies_file:
             cleanup_temp_cookies_file(temp_cookies_file)
 
-async def update_progress(ctx: commands.Context, player: GuildPlayer):
+async def update_progress(ctx, player: GuildPlayer):
     """Updates the progress bar every 5 seconds."""
+    # Handle both Context and Interaction objects
+    guild = getattr(ctx, 'guild', None)
+    author = getattr(ctx, 'author', getattr(ctx, 'user', None))
+    channel = getattr(ctx, 'channel', None)
+    
+    if not guild:
+        print("Error: No guild found in context for progress updates")
+        return
+        
     update_count = 0
     last_error_time = None
     error_count = 0
@@ -864,8 +890,8 @@ async def update_progress(ctx: commands.Context, player: GuildPlayer):
     print("\n=== Starting Progress Update Task ===")
     print(f"Current track URL: {player.current_track_url}")
     print(f"Current track info: {player.current_track_info.get('title') if player.current_track_info else 'None'}")
-    print(f"Voice client exists: {ctx.guild.voice_client is not None}")
-    print(f"Voice client playing: {ctx.guild.voice_client.is_playing() if ctx.guild.voice_client else False}")
+    print(f"Voice client exists: {guild.voice_client is not None}")
+    print(f"Voice client playing: {guild.voice_client.is_playing() if guild.voice_client else False}")
     
     while True:
         try:
@@ -874,11 +900,11 @@ async def update_progress(ctx: commands.Context, player: GuildPlayer):
                 print("Stopping progress updates - no current track URL")
                 break
                 
-            if not ctx.guild.voice_client:
+            if not guild.voice_client:
                 print("Stopping progress updates - no voice client")
                 break
                 
-            if not ctx.guild.voice_client.is_playing():
+            if not guild.voice_client.is_playing():
                 print("Stopping progress updates - not playing")
                 break
                 
@@ -890,10 +916,10 @@ async def update_progress(ctx: commands.Context, player: GuildPlayer):
                 print(f"\nProgress Update #{update_count}")
                 print(f"Current position: {format_time(current_position)}")
                 print(f"Track duration: {format_time(player.current_track_info.get('duration', 0))}")
-                print(f"Voice client playing: {ctx.guild.voice_client.is_playing()}")
-                print(f"Voice client paused: {ctx.guild.voice_client.is_paused()}")
-                if hasattr(ctx.guild.voice_client.source, 'position'):
-                    print(f"Voice client position: {ctx.guild.voice_client.source.position:.1f}s")
+                print(f"Voice client playing: {guild.voice_client.is_playing()}")
+                print(f"Voice client paused: {guild.voice_client.is_paused()}")
+                if hasattr(guild.voice_client.source, 'position'):
+                    print(f"Voice client position: {guild.voice_client.source.position:.1f}s")
             
             # Check if progress is stuck
             if abs(current_position - last_position) < 0.1:
@@ -901,8 +927,8 @@ async def update_progress(ctx: commands.Context, player: GuildPlayer):
                 if stuck_count >= 3:  # If stuck for 3 updates (15 seconds)
                     print(f"Progress appears stuck at {current_position:.1f}s")
                     # Try to force a position update
-                    if hasattr(ctx.guild.voice_client.source, 'position'):
-                        current_position = ctx.guild.voice_client.source.position
+                    if hasattr(guild.voice_client.source, 'position'):
+                        current_position = guild.voice_client.source.position
                         player.last_position = current_position
                         player.position_update_time = current_time
                         print(f"Updated position from voice client: {current_position:.1f}s")
@@ -920,17 +946,18 @@ async def update_progress(ctx: commands.Context, player: GuildPlayer):
                         print("Player message was deleted, creating new one")
                         embed = await create_player_embed(
                             player.current_track_info,
-                            ctx.author,
+                            author,
                             player
                         )
                         # Use channel.send instead of interaction response
-                        player.player_message = await ctx.channel.send(embed=embed, view=MusicControls())
+                        if channel:
+                            player.player_message = await channel.send(embed=embed, view=MusicControls())
                         continue
                     
                     # Update the existing message
                     embed = await create_player_embed(
                         player.current_track_info, 
-                        ctx.author, 
+                        author, 
                         player
                     )
                     try:
@@ -938,7 +965,8 @@ async def update_progress(ctx: commands.Context, player: GuildPlayer):
                         update_count += 1
                     except discord.NotFound:
                         print("Message was deleted during update, creating new one")
-                        player.player_message = await ctx.channel.send(embed=embed, view=MusicControls())
+                        if channel:
+                            player.player_message = await channel.send(embed=embed, view=MusicControls())
                     except discord.Forbidden:
                         print("No permission to edit message, skipping update")
                     except Exception as e:
@@ -973,9 +1001,9 @@ async def update_progress(ctx: commands.Context, player: GuildPlayer):
     print(f"Final position: {format_time(last_position)}")
     if not player.current_track_url:
         print("Reason: No current track URL")
-    elif not ctx.guild.voice_client:
+    elif not guild.voice_client:
         print("Reason: No voice client")
-    elif not ctx.guild.voice_client.is_playing():
+    elif not guild.voice_client.is_playing():
         print("Reason: Not playing")
     else:
         print("Reason: Unknown")
@@ -1320,10 +1348,12 @@ async def handle_playback_complete(ctx, error):
         # Try to reconnect if it's a connection error
         if isinstance(error, discord.errors.ConnectionClosed):
             try:
-                if ctx.guild.voice_client:
-                    await ctx.guild.voice_client.disconnect(force=True)
-                await ctx.guild.voice_client.connect(reconnect=True)
-                print("Successfully reconnected to voice channel")
+                # Handle both Context and Interaction objects
+                guild = getattr(ctx, 'guild', None)
+                if guild and guild.voice_client:
+                    await guild.voice_client.disconnect(force=True)
+                    await guild.voice_client.connect(reconnect=True)
+                    print("Successfully reconnected to voice channel")
             except Exception as e:
                 print(f"Failed to reconnect: {e}")
     
