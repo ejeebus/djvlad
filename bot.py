@@ -186,7 +186,7 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # Define yt-dlp options globally
 ydl_opts = {
-    'format': 'bestaudio/best',  # Prefer best audio quality
+    'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',  # More flexible format selection
     'quiet': False,  # Enable logging
     'extract_flat': 'in_playlist',
     'default_search': 'ytsearch',
@@ -201,7 +201,7 @@ ydl_opts = {
     'restrictfilenames': True,  # Restrict filenames
     'noplaylist': True,  # Don't extract playlists
     'age_limit': 21,  # Age limit
-    'socket_timeout': 30,  # Increase socket timeout
+    'socket_timeout': 30,  # Increased socket timeout
     'retries': 10,  # Increase retry attempts
     'fragment_retries': 10,  # Increase fragment retry attempts
     'extractor_retries': 10,  # Increase extractor retry attempts
@@ -222,8 +222,9 @@ ydl_opts = {
     'extractor_args': {
         'youtube': {
             'skip': ['dash', 'hls'],  # Skip formats that might trigger bot detection
-            'player_client': ['android', 'web'],  # Try different player clients
-            'player_skip': ['js', 'configs', 'webpage'],  # Skip unnecessary player components
+            'player_client': ['web', 'android'],  # Try different player clients
+            'player_skip': ['js'],  # Skip unnecessary player components
+            'youtubetab': {'skip': 'authcheck'}  # Skip auth checks
         }
     },
     'postprocessors': [{
@@ -776,19 +777,51 @@ async def play_track(ctx, url: str, msg_handler=None):
         
         # Use CookieManager for proper cleanup
         with CookieManager() as temp_cookies_file:
-            # Define extraction strategies - optimized for speed
+            # Define extraction strategies - optimized for speed and reliability
             extraction_strategies = [
                 {
-                    'name': 'Fast Web Client',
+                    'name': 'Standard Web Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
-                        'format': 'bestaudio/best',
-                        'socket_timeout': 15,  # Reduced timeout
-                        'retries': 3,  # Reduced retries
+                        'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
+                        'socket_timeout': 30,
+                        'retries': 5,
                         'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'DNT': '1',
+                            'Connection': 'keep-alive',
+                            'Upgrade-Insecure-Requests': '1',
+                            'Sec-Fetch-Dest': 'document',
+                            'Sec-Fetch-Mode': 'navigate',
+                            'Sec-Fetch-Site': 'none',
+                            'Sec-Fetch-User': '?1',
+                            'Cache-Control': 'max-age=0',
+                        },
+                        'extractor_args': {
+                            'youtube': {
+                                'player_client': ['web'],
+                                'player_skip': ['js'],
+                                'youtubetab': {'skip': 'authcheck'}
+                            }
+                        }
+                    }
+                },
+                {
+                    'name': 'Mobile Client',
+                    'options': {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': False,
+                        'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
+                        'socket_timeout': 30,
+                        'retries': 5,
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                             'Accept-Language': 'en-US,en;q=0.5',
                             'Accept-Encoding': 'gzip, deflate',
@@ -797,24 +830,24 @@ async def play_track(ctx, url: str, msg_handler=None):
                         },
                         'extractor_args': {
                             'youtube': {
-                                'player_client': ['web'],
-                                'player_skip': ['js', 'configs'],
+                                'player_client': ['android'],
+                                'player_skip': ['js'],
                                 'youtubetab': {'skip': 'authcheck'}
                             }
                         }
                     }
                 },
                 {
-                    'name': 'Fast Mobile Client',
+                    'name': 'Minimal Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
                         'format': 'bestaudio/best',
-                        'socket_timeout': 15,
-                        'retries': 3,
+                        'socket_timeout': 30,
+                        'retries': 5,
                         'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                             'Accept-Language': 'en-US,en;q=0.5',
                             'Accept-Encoding': 'gzip, deflate',
@@ -822,9 +855,32 @@ async def play_track(ctx, url: str, msg_handler=None):
                         },
                         'extractor_args': {
                             'youtube': {
-                                'player_client': ['android'],
+                                'player_client': ['web'],
                                 'player_skip': ['js', 'configs'],
-                                'youtubetab': {'skip': 'authcheck'}
+                            }
+                        }
+                    }
+                },
+                {
+                    'name': 'Fallback Client',
+                    'options': {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': False,
+                        'format': 'bestaudio/best',
+                        'socket_timeout': 30,
+                        'retries': 5,
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Accept-Encoding': 'gzip, deflate',
+                            'Connection': 'keep-alive',
+                        },
+                        'extractor_args': {
+                            'youtube': {
+                                'player_client': ['web'],
+                                'player_skip': ['js'],
                             }
                         }
                     }
@@ -841,32 +897,39 @@ async def play_track(ctx, url: str, msg_handler=None):
             last_error = None
             
             for i, strategy in enumerate(extraction_strategies, 1):
-                print(f"Trying strategy {i}/2: {strategy['name']}")
+                print(f"Trying strategy {i}/4: {strategy['name']}")
                 
                 try:
                     with yt_dlp.YoutubeDL(strategy['options']) as ydl:
                         print(f"Created yt-dlp instance for {strategy['name']}")
                         info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                        print(f"✓ {strategy['name']} extraction successful")
-                        break  # Success! Exit the loop
                         
+                        if info:
+                            print(f"✓ {strategy['name']} succeeded")
+                            break
+                        else:
+                            print(f"✗ {strategy['name']} returned no info")
+                            
                 except yt_dlp.utils.DownloadError as e:
                     error_msg = str(e)
                     print(f"✗ {strategy['name']} failed: {error_msg}")
-                    last_error = e
                     
-                    # Check if it's a format issue and try next strategy
+                    # Check for specific error types
                     if "Requested format is not available" in error_msg:
                         print(f"Format issue for {strategy['name']}, trying next strategy...")
                         continue
-                    else:
-                        # For other errors, try next strategy
+                    elif "Sign in to confirm you're not a bot" in error_msg:
+                        print(f"Bot detection for {strategy['name']}, trying next strategy...")
                         continue
+                    elif "Failed to extract any player response" in error_msg:
+                        print(f"Player response extraction failed for {strategy['name']}, trying next strategy...")
+                        continue
+                    else:
+                        last_error = e
                         
                 except Exception as e:
                     print(f"✗ {strategy['name']} failed with unexpected error: {e}")
                     last_error = e
-                    continue
             
             if not info:
                 error_msg = f"Failed to extract video information: {last_error}"
@@ -1882,6 +1945,11 @@ def update_yt_dlp():
             
             if update_result.returncode == 0:
                 print("✅ yt-dlp updated successfully")
+                # Show the new version
+                version_result = subprocess.run([sys.executable, "-m", "yt-dlp", "--version"], 
+                                              capture_output=True, text=True, timeout=10)
+                if version_result.returncode == 0:
+                    print(f"📦 yt-dlp version: {version_result.stdout.strip()}")
             else:
                 print(f"⚠️ Failed to update yt-dlp: {update_result.stderr}")
         else:
@@ -1894,6 +1962,8 @@ def update_yt_dlp():
             else:
                 print(f"❌ Failed to install yt-dlp: {install_result.stderr}")
                 
+    except subprocess.TimeoutExpired:
+        print("⚠️ Timeout while updating yt-dlp")
     except Exception as e:
         print(f"⚠️ Error updating yt-dlp: {e}")
 
