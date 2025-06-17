@@ -186,7 +186,7 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # Define yt-dlp options globally
 ydl_opts = {
-    'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',  # More flexible format selection
+    'format': 'bestaudio/best',  # Use basic format selection
     'quiet': False,  # Enable logging
     'extract_flat': 'in_playlist',
     'default_search': 'ytsearch',
@@ -780,12 +780,12 @@ async def play_track(ctx, url: str, msg_handler=None):
             # Define extraction strategies - optimized for speed and reliability
             extraction_strategies = [
                 {
-                    'name': 'Standard Web Client',
+                    'name': 'Basic Audio Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
-                        'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
+                        'format': 'bestaudio/best',  # Use basic format first
                         'socket_timeout': 30,
                         'retries': 5,
                         'http_headers': {
@@ -812,12 +812,12 @@ async def play_track(ctx, url: str, msg_handler=None):
                     }
                 },
                 {
-                    'name': 'Mobile Client',
+                    'name': 'Simple Audio Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
-                        'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
+                        'format': 'best',  # Use generic best format
                         'socket_timeout': 30,
                         'retries': 5,
                         'http_headers': {
@@ -843,7 +843,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
-                        'format': 'bestaudio/best',
+                        'format': 'worst',  # Try worst quality as fallback
                         'socket_timeout': 30,
                         'retries': 5,
                         'http_headers': {
@@ -862,7 +862,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                     }
                 },
                 {
-                    'name': 'Fallback Client',
+                    'name': 'Legacy Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
@@ -896,6 +896,24 @@ async def play_track(ctx, url: str, msg_handler=None):
             info = None
             last_error = None
             
+            # First, try to get available formats for debugging
+            try:
+                debug_options = extraction_strategies[0]['options'].copy()
+                if temp_cookies_file:
+                    debug_options['cookiefile'] = temp_cookies_file
+                
+                with yt_dlp.YoutubeDL(debug_options) as ydl:
+                    print("🔍 Checking available formats...")
+                    format_info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                    if format_info and 'formats' in format_info:
+                        print(f"Available formats: {len(format_info['formats'])}")
+                        for fmt in format_info['formats'][:5]:  # Show first 5 formats
+                            print(f"  - {fmt.get('format_id', 'N/A')}: {fmt.get('ext', 'N/A')} ({fmt.get('format_note', 'N/A')})")
+                    else:
+                        print("No format information available")
+            except Exception as e:
+                print(f"Could not check formats: {e}")
+            
             for i, strategy in enumerate(extraction_strategies, 1):
                 print(f"Trying strategy {i}/4: {strategy['name']}")
                 
@@ -909,6 +927,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                             break
                         else:
                             print(f"✗ {strategy['name']} returned no info")
+                            last_error = Exception(f"{strategy['name']} returned no info")
                             
                 except yt_dlp.utils.DownloadError as e:
                     error_msg = str(e)
@@ -917,12 +936,15 @@ async def play_track(ctx, url: str, msg_handler=None):
                     # Check for specific error types
                     if "Requested format is not available" in error_msg:
                         print(f"Format issue for {strategy['name']}, trying next strategy...")
+                        last_error = e  # Preserve the error
                         continue
                     elif "Sign in to confirm you're not a bot" in error_msg:
                         print(f"Bot detection for {strategy['name']}, trying next strategy...")
+                        last_error = e  # Preserve the error
                         continue
                     elif "Failed to extract any player response" in error_msg:
                         print(f"Player response extraction failed for {strategy['name']}, trying next strategy...")
+                        last_error = e  # Preserve the error
                         continue
                     else:
                         last_error = e
@@ -932,15 +954,9 @@ async def play_track(ctx, url: str, msg_handler=None):
                     last_error = e
             
             if not info:
-                error_msg = f"Failed to extract video information: {last_error}"
-                print(f"❌ {error_msg}")
-                if msg_handler:
-                    await msg_handler.send(f"❌ Error: {error_msg}")
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(f"❌ Error: {error_msg}")
-                else:
-                    await ctx.followup.send(f"❌ Error: {error_msg}", ephemeral=True)
-                return
+                error_msg = str(last_error) if last_error else "All extraction strategies failed"
+                print(f"❌ Failed to extract video information: {error_msg}")
+                raise ValueError(f"Failed to extract video information: {error_msg}")
             
             print(f"Video info extracted successfully with {strategy['name']}")
             
