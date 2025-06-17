@@ -151,9 +151,6 @@ ydl_opts = {
     'restrictfilenames': True,  # Restrict filenames
     'noplaylist': True,  # Don't extract playlists
     'age_limit': 21,  # Age limit
-    'geo_bypass': True,  # Bypass geo-restrictions
-    'geo_bypass_country': 'US',  # Bypass country
-    'geo_bypass_ip_block': '1.0.0.1',  # Bypass IP block
     'http_headers': {  # Add headers to look more like a browser
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -674,9 +671,6 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
             'restrictfilenames': True,  # Restrict filenames
             'noplaylist': True,  # Don't extract playlists
             'age_limit': 21,  # Age limit
-            'geo_bypass': True,  # Bypass geo-restrictions
-            'geo_bypass_country': 'US',  # Bypass country
-            'geo_bypass_ip_block': '1.0.0.1',  # Bypass IP block
             'http_headers': {  # Add headers to look more like a browser
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -1140,9 +1134,6 @@ async def play_command(interaction: discord.Interaction, query: str):
             'restrictfilenames': True,  # Restrict filenames
             'noplaylist': True,  # Don't extract playlists
             'age_limit': 21,  # Age limit
-            'geo_bypass': True,  # Bypass geo-restrictions
-            'geo_bypass_country': 'US',  # Bypass country
-            'geo_bypass_ip_block': '1.0.0.1',  # Bypass IP block
             'http_headers': {  # Add headers to look more like a browser
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
