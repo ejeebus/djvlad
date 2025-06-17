@@ -897,6 +897,32 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'socket_timeout': 30,
                     'retries': 10,
                 }
+            },
+            {
+                'name': 'Skip Auth Check',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['web'],
+                            'player_skip': ['js'],
+                        },
+                        'youtubetab': {
+                            'skip': ['authcheck']
+                        }
+                    },
+                    'socket_timeout': 30,
+                    'retries': 10,
+                }
             }
         ]
         
@@ -919,19 +945,42 @@ async def play_track(ctx, url: str, msg_handler=None):
                         'youtube': {
                             'player_client': ['android'],
                             'player_skip': ['js'],
+                        },
+                        'youtubetab': {
+                            'skip': ['authcheck']
                         }
                     }
                 elif strategy['name'] == 'Minimal Headers':
                     # Add cookies if available
                     if temp_cookies_file:
                         strategy['options']['cookiefile'] = temp_cookies_file
+                    # Add auth check skip
+                    strategy['options']['extractor_args'] = {
+                        'youtubetab': {
+                            'skip': ['authcheck']
+                        }
+                    }
                 elif strategy['name'] == 'Mobile Client':
                     strategy['options']['extractor_args'] = {
                         'youtube': {
                             'player_client': ['android'],
                             'player_skip': ['js', 'configs'],
+                        },
+                        'youtubetab': {
+                            'skip': ['authcheck']
                         }
                     }
+                    if temp_cookies_file:
+                        strategy['options']['cookiefile'] = temp_cookies_file
+                elif strategy['name'] == 'Enhanced Web Client':
+                    # Add auth check skip to enhanced web client
+                    if 'extractor_args' not in strategy['options']:
+                        strategy['options']['extractor_args'] = {}
+                    strategy['options']['extractor_args']['youtubetab'] = {
+                        'skip': ['authcheck']
+                    }
+                elif strategy['name'] == 'Skip Auth Check':
+                    # Add cookies if available
                     if temp_cookies_file:
                         strategy['options']['cookiefile'] = temp_cookies_file
                 
