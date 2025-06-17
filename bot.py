@@ -1779,6 +1779,21 @@ async def on_ready():
     print("🔁 Commands synced")
 
 @bot.event
+async def on_disconnect():
+    """Called when the bot disconnects from Discord."""
+    print("⚠️ Bot disconnected from Discord")
+
+@bot.event
+async def on_connect():
+    """Called when the bot connects to Discord."""
+    print("🔗 Bot connected to Discord")
+
+@bot.event
+async def on_resumed():
+    """Called when the bot resumes a connection."""
+    print("🔄 Bot resumed connection to Discord")
+
+@bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     """Handles voice state changes, like the bot being disconnected."""
     # Only handle the bot's own voice state changes
@@ -1833,15 +1848,42 @@ signal.signal(signal.SIGTERM, signal_handler)
 if __name__ == "__main__":
     try:
         load_dotenv()
-        bot.run(os.getenv("DISCORD_TOKEN"))
+        
+        # Check if token exists
+        token = os.getenv("DISCORD_TOKEN")
+        if not token:
+            print("❌ DISCORD_TOKEN not found in environment variables")
+            sys.exit(1)
+        
+        # Validate token format (basic check)
+        if not token.startswith("MTA") or len(token) < 50:
+            print("❌ Invalid Discord token format")
+            sys.exit(1)
+        
+        print("🔑 Token validation passed")
+        print("🚀 Starting bot...")
+        
+        bot.run(token)
     except KeyboardInterrupt:
         print("\n⚠️ Keyboard interrupt received. Shutting down...")
         try:
             asyncio.run(bot.close())
         except:
             pass
+    except discord.errors.LoginFailure:
+        print("❌ Failed to login: Invalid token")
+        sys.exit(1)
+    except discord.errors.ConnectionClosed as e:
+        print(f"❌ Discord connection closed: {e}")
+        if e.code == 4006:
+            print("🔍 WebSocket Code 4006: Session is no longer valid")
+            print("💡 This usually means the bot token is invalid or the bot is connecting from multiple locations")
+        sys.exit(1)
     except Exception as e:
         print(f"\n❌ Error running bot: {e}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
     finally:
         force_kill_python_processes()
         print("✅ Bot process terminated.")
