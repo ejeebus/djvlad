@@ -716,7 +716,12 @@ async def play_track(ctx, url: str, msg_handler=None):
                     await ctx.followup.send(error_msg, ephemeral=True)
                 return
             
-            # Try to connect with better error handling
+            # Connect to voice channel
+            print(f"Connecting to voice channel: {channel.name}")
+            print(f"Channel ID: {channel.id}")
+            print(f"Guild ID: {guild.id}")
+            print(f"Bot permissions in channel: {channel.permissions_for(guild.me)}")
+            
             try:
                 print("Attempting voice connection...")
                 print(f"Channel type: {type(channel)}")
@@ -724,66 +729,14 @@ async def play_track(ctx, url: str, msg_handler=None):
                 print(f"Bot user: {guild.me}")
                 print(f"Bot status: {guild.me.status}")
                 
-                # Try a more robust connection approach
-                try:
-                    # First, try to disconnect if already connected
-                    if guild.voice_client:
-                        print("Disconnecting existing voice client...")
-                        await guild.voice_client.disconnect(force=True)
-                        await asyncio.sleep(1)  # Wait a moment
-                    
-                    # Try connection with different parameters
-                    voice_client = await channel.connect(
-                        timeout=30.0,  # Increased timeout
-                        self_deaf=True, 
-                        self_mute=False
-                    )
-                    print("Successfully connected to voice channel")
-                    
-                except Exception as first_attempt_error:
-                    print(f"First connection attempt failed: {first_attempt_error}")
-                    print("Trying alternative connection method...")
-                    
-                    # Try with different parameters
-                    voice_client = await channel.connect(
-                        timeout=15.0,
-                        self_deaf=True,
-                        self_mute=False
-                    )
-                    print("Successfully connected with alternative method")
-                    
-            except discord.errors.ConnectionClosed as e:
-                print(f"Discord connection closed: {e}")
-                print(f"Connection code: {e.code}")
-                print(f"Connection reason: {getattr(e, 'reason', 'No reason provided')}")
-                error_msg = f"❌ Discord connection failed (code {e.code}): {e.reason if hasattr(e, 'reason') else 'Unknown reason'}"
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
-                else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
-            except discord.errors.ClientException as e:
-                print(f"Discord client exception: {e}")
-                error_msg = f"❌ Discord client error: {str(e)}"
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
-                else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
-            except asyncio.TimeoutError:
-                print("Voice connection timed out")
-                error_msg = "❌ Voice connection timed out. Please try again."
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
-                else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
+                # Simple connection approach - no complex retry logic
+                voice_client = await channel.connect(
+                    timeout=30.0,
+                    self_deaf=True, 
+                    self_mute=False
+                )
+                print("Successfully connected to voice channel")
+                
             except Exception as e:
                 print(f"Failed to connect to voice channel: {e}")
                 print(f"Error type: {type(e)}")
@@ -1041,16 +994,6 @@ async def play_track(ctx, url: str, msg_handler=None):
         
         print(f"Video info extracted successfully with {strategy['name']}")
         
-        # Ensure voice client is still connected
-        if voice_client and not voice_client.is_connected():
-            print("Voice client disconnected during extraction, attempting to reconnect...")
-            try:
-                voice_client = await channel.connect(timeout=20.0, self_deaf=True)
-                print("Successfully reconnected to voice channel")
-            except Exception as e:
-                print(f"Failed to reconnect to voice channel: {e}")
-                raise ValueError(f"Voice connection lost and could not reconnect: {str(e)}")
-
         # Validate the info dictionary
         if not info:
             print("No info returned from yt-dlp")
@@ -1817,18 +1760,6 @@ async def handle_playback_complete(ctx, error):
         print(f"Error type: {type(error)}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
-        
-        # Try to reconnect if it's a connection error
-        if isinstance(error, discord.errors.ConnectionClosed):
-            try:
-                # Handle both Context and Interaction objects
-                guild = getattr(ctx, 'guild', None)
-                if guild and guild.voice_client:
-                    await guild.voice_client.disconnect(force=True)
-                    await guild.voice_client.connect(reconnect=True)
-                print("Successfully reconnected to voice channel")
-            except Exception as e:
-                print(f"Failed to reconnect: {e}")
     
     print("Calling play_next from handle_playback_complete")
     await play_next(ctx)
@@ -1860,16 +1791,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 except discord.NotFound:
                     pass
             
-            # Try to reconnect if it was an unexpected disconnect
-            try:
-                if member.guild.voice_client and member.guild.voice_client.is_connected():
-                    await member.guild.voice_client.disconnect(force=True)
-                await member.guild.voice_client.connect(reconnect=True)
-                print("Successfully reconnected to voice channel")
-            except Exception as e:
-                print(f"Failed to reconnect to voice channel: {e}")
-                players.pop(guild_id, None)  # Clean up the player instance if reconnection fails
-
 def force_kill_python_processes():
     """Force kill any remaining Python processes."""
     current_pid = os.getpid()
