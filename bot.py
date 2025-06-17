@@ -804,29 +804,15 @@ async def play_track(ctx, url: str, msg_handler=None):
             # Define extraction strategies - optimized for speed and reliability
             extraction_strategies = [
                 {
-                    'name': 'No Format Preference',
+                    'name': 'Enhanced Web Client',
                     'options': {
                         'quiet': True,
                         'no_warnings': True,
                         'extract_flat': False,
                         # Don't specify format - let yt-dlp choose
                         'socket_timeout': 30,
-                        'retries': 3,  # Reduced retries to avoid rate limiting
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-                            'Accept-Language': 'en-US,en;q=0.9',
-                            'Accept-Encoding': 'gzip, deflate, br',
-                            'DNT': '1',
-                            'Connection': 'keep-alive',
-                            'Upgrade-Insecure-Requests': '1',
-                            'Sec-Fetch-Dest': 'document',
-                            'Sec-Fetch-Mode': 'navigate',
-                            'Sec-Fetch-Site': 'none',
-                            'Sec-Fetch-User': '?1',
-                            'Cache-Control': 'max-age=0',
-                            'Referer': 'https://www.youtube.com/',
-                        },
+                        'retries': 2,  # Reduced retries to avoid rate limiting
+                        'http_headers': AntiBotDetection.get_enhanced_headers(),
                         'extractor_args': {
                             'youtube': {
                                 'player_client': ['web'],
@@ -844,19 +830,41 @@ async def play_track(ctx, url: str, msg_handler=None):
                         'extract_flat': False,
                         'format': 'bestaudio/best',
                         'socket_timeout': 30,
-                        'retries': 3,
+                        'retries': 2,
                         'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1',
+                            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                             'Accept-Language': 'en-US,en;q=0.5',
                             'Accept-Encoding': 'gzip, deflate',
                             'Connection': 'keep-alive',
                             'Upgrade-Insecure-Requests': '1',
                             'Referer': 'https://m.youtube.com/',
+                            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                            'Sec-Ch-Ua-Mobile': '?1',
+                            'Sec-Ch-Ua-Platform': '"iOS"',
                         },
                         'extractor_args': {
                             'youtube': {
                                 'player_client': ['android'],
+                                'player_skip': ['js'],
+                                'youtubetab': {'skip': 'authcheck'}
+                            }
+                        }
+                    }
+                },
+                {
+                    'name': 'Invidious Fallback',
+                    'options': {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': False,
+                        'format': 'bestaudio/best',
+                        'socket_timeout': 30,
+                        'retries': 2,
+                        'http_headers': AntiBotDetection.get_enhanced_headers(),
+                        'extractor_args': {
+                            'youtube': {
+                                'player_client': ['web'],
                                 'player_skip': ['js'],
                                 'youtubetab': {'skip': 'authcheck'}
                             }
@@ -871,7 +879,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                         'extract_flat': False,
                         'format': 'best',  # Use generic best format
                         'socket_timeout': 30,
-                        'retries': 3,
+                        'retries': 2,
                         'http_headers': {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -884,31 +892,6 @@ async def play_track(ctx, url: str, msg_handler=None):
                             'youtube': {
                                 'player_client': ['web'],
                                 'player_skip': ['js', 'configs'],
-                            }
-                        }
-                    }
-                },
-                {
-                    'name': 'Legacy Client',
-                    'options': {
-                        'quiet': True,
-                        'no_warnings': True,
-                        'extract_flat': False,
-                        'format': 'worst',  # Try worst quality as fallback
-                        'socket_timeout': 30,
-                        'retries': 3,
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                            'Accept-Language': 'en-US,en;q=0.5',
-                            'Accept-Encoding': 'gzip, deflate',
-                            'Connection': 'keep-alive',
-                            'Referer': 'https://www.youtube.com/',
-                        },
-                        'extractor_args': {
-                            'youtube': {
-                                'player_client': ['web'],
-                                'player_skip': ['js'],
                             }
                         }
                     }
@@ -1014,45 +997,87 @@ async def play_track(ctx, url: str, msg_handler=None):
                 error_msg = str(last_error) if last_error else "All extraction strategies failed"
                 print(f"❌ Failed to extract video information: {error_msg}")
                 
-                # Try one more fallback - use the search result directly
-                print("🔄 Trying fallback: Using search result URL directly...")
-                try:
-                    # Rate limiting for fallback
-                    await rate_limiter.wait()
-                    
-                    fallback_options = {
-                        'quiet': True,
-                        'no_warnings': True,
-                        'extract_flat': False,
-                        'format': 'bestaudio/best',
-                        'socket_timeout': 30,
-                        'retries': 5,
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                            'Accept-Language': 'en-US,en;q=0.5',
-                            'Accept-Encoding': 'gzip, deflate',
-                            'Connection': 'keep-alive',
-                        },
-                        'extractor_args': {
-                            'youtube': {
-                                'player_client': ['web'],
-                                'player_skip': ['js'],
+                # Try alternative YouTube frontends
+                print("🔄 Trying alternative YouTube frontends...")
+                alternative_frontends = [
+                    "https://invidious.projectsegfau.lt",
+                    "https://invidious.slipfox.xyz", 
+                    "https://invidious.privacydev.net",
+                    "https://invidious.kavin.rocks"
+                ]
+                
+                for frontend in alternative_frontends:
+                    try:
+                        await rate_limiter.wait()
+                        print(f"Trying frontend: {frontend}")
+                        
+                        # Try to extract using alternative frontend
+                        alt_url = f"{frontend}/watch?v={url.split('v=')[1]}"
+                        alt_options = {
+                            'quiet': True,
+                            'no_warnings': True,
+                            'extract_flat': False,
+                            'format': 'bestaudio/best',
+                            'socket_timeout': 30,
+                            'retries': 1,
+                            'http_headers': AntiBotDetection.get_enhanced_headers(),
+                        }
+                        
+                        if temp_cookies_file:
+                            alt_options['cookiefile'] = temp_cookies_file
+                        
+                        with yt_dlp.YoutubeDL(alt_options) as ydl:
+                            info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(alt_url, download=False))
+                            if info:
+                                print(f"✓ Alternative frontend succeeded: {frontend}")
+                                break
+                            else:
+                                print(f"✗ Alternative frontend failed: {frontend}")
+                    except Exception as alt_error:
+                        print(f"✗ Alternative frontend error ({frontend}): {alt_error}")
+                        continue
+                
+                # If alternative frontends failed, try the original fallback
+                if not info:
+                    print("🔄 Trying fallback: Using search result URL directly...")
+                    try:
+                        # Rate limiting for fallback
+                        await rate_limiter.wait()
+                        
+                        fallback_options = {
+                            'quiet': True,
+                            'no_warnings': True,
+                            'extract_flat': False,
+                            'format': 'bestaudio/best',
+                            'socket_timeout': 30,
+                            'retries': 2,
+                            'http_headers': AntiBotDetection.get_enhanced_headers(),
+                            'extractor_args': {
+                                'youtube': {
+                                    'player_client': ['web'],
+                                    'player_skip': ['js'],
+                                }
                             }
                         }
-                    }
-                    if temp_cookies_file:
-                        fallback_options['cookiefile'] = temp_cookies_file
-                    
-                    with yt_dlp.YoutubeDL(fallback_options) as ydl:
-                        info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                        if info:
-                            print("✓ Fallback extraction succeeded")
+                        if temp_cookies_file:
+                            fallback_options['cookiefile'] = temp_cookies_file
+                        
+                        with yt_dlp.YoutubeDL(fallback_options) as ydl:
+                            info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                            if info:
+                                print("✓ Fallback extraction succeeded")
+                            else:
+                                raise ValueError("Fallback extraction returned no info")
+                    except Exception as fallback_error:
+                        print(f"✗ Fallback also failed: {fallback_error}")
+                        
+                        # Final fallback: try to use search result info if available
+                        if 'search_result_info' in locals() and search_result_info:
+                            print("🔄 Using search result info as final fallback...")
+                            info = search_result_info
+                            print("✓ Using search result info")
                         else:
-                            raise ValueError("Fallback extraction returned no info")
-                except Exception as fallback_error:
-                    print(f"✗ Fallback also failed: {fallback_error}")
-                    raise ValueError(f"Failed to extract video information: {error_msg}")
+                            raise ValueError(f"Failed to extract video information: {error_msg}")
             
             print(f"Video info extracted successfully with {strategy['name']}")
             
@@ -1844,6 +1869,8 @@ async def search_and_play(ctx, query: str, msg_handler=None):
             guild = getattr(ctx, 'guild', None)
             if not guild or not guild.voice_client or not guild.voice_client.is_playing():
                 print("No active playback, starting play_track")
+                # Capture search result info for potential fallback
+                search_result_info = best_entry
                 await play_track(ctx, best_entry['webpage_url'], msg_handler)
             else:
                 print("Already playing, adding to queue")
@@ -1864,6 +1891,8 @@ async def search_and_play(ctx, query: str, msg_handler=None):
             guild = getattr(ctx, 'guild', None)
             if not guild or not guild.voice_client or not guild.voice_client.is_playing():
                 print("No active playback, starting play_track")
+                # Capture search result info for potential fallback
+                search_result_info = info
                 await play_track(ctx, info['webpage_url'], msg_handler)
             else:
                 print("Already playing, adding to queue")
@@ -2084,3 +2113,45 @@ def update_yt_dlp():
 
 # Update yt-dlp on startup
 update_yt_dlp()
+
+# --- Anti-Bot Detection ---
+class AntiBotDetection:
+    """Enhanced anti-bot detection measures."""
+    
+    @staticmethod
+    def get_rotating_user_agents():
+        """Get a list of rotating user agents."""
+        return [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1',
+            'Mozilla/5.0 (iPad; CPU OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1',
+        ]
+    
+    @staticmethod
+    def get_enhanced_headers(user_agent=None):
+        """Get enhanced headers that look more human-like."""
+        if not user_agent:
+            user_agent = AntiBotDetection.get_rotating_user_agents()[0]
+        
+        return {
+            'User-Agent': user_agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+        }
