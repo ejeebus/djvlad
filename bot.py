@@ -1,872 +1,215 @@
-import discord
-from discord import app_commands
-from discord.ext import commands
-import yt_dlp
+"""
+DJVlad Discord Music Bot - Refactored Version
+A clean, reliable Discord music bot with YouTube integration
+"""
+
 import asyncio
-from datetime import datetime, timedelta, timezone
+import base64
 import os
 import re
 import signal
-import sys
-import psutil
-from dotenv import load_dotenv
-import tempfile
-import atexit
-import base64
-from pathlib import Path
 import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Dict, List, Any, Union
 
-# --- Cookie Management ---
-def get_cookies_content():
-    """Get cookies content from multiple environment variables if needed."""
-    print("\n=== Checking YouTube Cookies ===")
+import discord
+from discord import app_commands
+from discord.ext import commands
+import psutil
+import yt_dlp
+from dotenv import load_dotenv
+
+# ============================================================================
+# CONFIGURATION AND SETUP
+# ============================================================================
+
+class Config:
+    """Centralized configuration for the bot."""
     
-    # Try to get all cookie parts
-    cookie_parts = []
-    part_num = 1
-    while True:
-        env_var = f'YOUTUBE_COOKIES_B64_{part_num}'
-        cookie_part = os.getenv(env_var)
-        if not cookie_part:
-            if part_num == 1:
-                # Try the old single variable name for backward compatibility
-                cookie_part = os.getenv('YOUTUBE_COOKIES_B64')
-            if not cookie_part:
-                break
-        cookie_parts.append(cookie_part)
-        part_num += 1
+    # Bot settings
+    COMMAND_PREFIX = '!'
+    DEFAULT_TIMEOUT = 30
+    MAX_RETRIES = 3
     
-    if not cookie_parts:
-        print("No cookie environment variables found")
-        return None
+    # Voice settings
+    VOICE_CONNECT_TIMEOUT = 10
+    VOICE_RECONNECT_DELAY = 2
     
-    try:
-        # Combine and decode all parts
-        combined_b64 = ''.join(cookie_parts)
-        cookies_content = base64.b64decode(combined_b64).decode('utf-8')
-        
-        # Validate cookie content
-        if not cookies_content.strip():
-            print("Cookie content is empty")
-            return None
-            
-        # Check for required cookie fields - expanded list
-        required_fields = [
-            'youtube.com',
-            'VISITOR_INFO1_LIVE',
-            'LOGIN_INFO',
-            'SID',
-            'HSID',
-            'SSID'
-        ]
-        found_fields = []
-        missing_fields = []
-        
-        # Check both youtube.com and www.youtube.com domains
-        for field in required_fields:
-            if field in cookies_content or f'www.{field}' in cookies_content:
-                found_fields.append(field)
-            else:
-                missing_fields.append(field)
-        
-        print(f"Found cookie fields: {found_fields}")
-        if missing_fields:
-            print(f"Missing cookie fields: {missing_fields}")
-            print("Warning: Missing some recommended cookie fields")
-        
-        # Check if we have at least the basic required fields
-        if 'youtube.com' not in cookies_content and 'www.youtube.com' not in cookies_content:
-            print("No YouTube domain cookies found")
-            return None
-            
-        # Print first few characters of cookie content for debugging (safely)
-        cookie_preview = cookies_content[:100].replace('\n', '\\n')
-        print(f"Cookie content preview: {cookie_preview}...")
-            
-        print("Cookie validation successful")
-        return cookies_content
-        
-    except Exception as e:
-        print(f"Error decoding/validating cookies: {e}")
-        print(f"Error type: {type(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        return None
-
-def create_temp_cookies_file():
-    """Create a temporary cookies file from environment variables."""
-    cookies_content = get_cookies_content()
-    if not cookies_content:
-        print("No valid cookies content to write to file")
-        return None
-        
-    # Create a temporary file
-    temp_file = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt')
-    try:
-        # Write cookies content to the temporary file
-        temp_file.write(cookies_content)
-        temp_file.close()
-        print(f"Successfully created temporary cookies file: {temp_file.name}")
-        return temp_file.name
-    except Exception as e:
-        print(f"Error writing to temporary cookies file: {e}")
-        print(f"Error type: {type(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        if temp_file:
-            temp_file.close()
-        return None
-
-def cleanup_temp_cookies_file(file_path):
-    """Clean up the temporary cookies file."""
-    if file_path and os.path.exists(file_path):
-        try:
-            os.unlink(file_path)
-        except Exception as e:
-            print(f"Error cleaning up temporary cookies file: {e}")
-
-# Register cleanup function to run at exit
-atexit.register(lambda: cleanup_temp_cookies_file(getattr(create_temp_cookies_file, 'last_file', None)))
-
-# --- Bot Setup ---
-# Initialize bot with required intents
-intents = discord.Intents.default()
-intents.message_content = True
-intents.voice_states = True
-bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
-
-# Define yt-dlp options globally
-ydl_opts = {
-    'format': 'bestaudio/best',  # Prefer best audio quality
-    'quiet': False,  # Enable logging
-    'extract_flat': 'in_playlist',
-    'default_search': 'ytsearch',
-    'noplaylist': True,  # Don't extract playlists when searching
-    'nocheckcertificate': True,  # Skip SSL certificate validation
-    'ignoreerrors': False,  # Don't ignore errors
-    'no_warnings': False,  # Show warnings
-    'extractaudio': True,  # Extract audio
-    'audioformat': 'mp3',  # Convert to mp3
-    'audioquality': '192K',  # Audio quality
-    'outtmpl': '%(title)s.%(ext)s',  # Output template
-    'restrictfilenames': True,  # Restrict filenames
-    'noplaylist': True,  # Don't extract playlists
-    'age_limit': 21,  # Age limit
-    'socket_timeout': 30,  # Increase socket timeout
-    'retries': 10,  # Increase retry attempts
-    'fragment_retries': 10,  # Increase fragment retry attempts
-    'extractor_retries': 10,  # Increase extractor retry attempts
-    'http_headers': {  # Add headers to look more like a browser
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-    },
-    'extractor_args': {
-        'youtube': {
-            'skip': ['dash', 'hls'],  # Skip formats that might trigger bot detection
-            'player_client': ['android', 'web'],  # Try different player clients
-            'player_skip': ['js', 'configs', 'webpage'],  # Skip unnecessary player components
-        }
-    },
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '192',
-    }]
-}
-
-# Define FFmpeg options globally
-ffmpeg_options = {
-    'before_options': (
-        '-reconnect 1 '  # Enable reconnection
-        '-reconnect_streamed 1 '  # Enable stream reconnection
-        '-reconnect_delay_max 5 '  # Max delay between reconnection attempts
-        '-thread_queue_size 1024 '  # Reduced thread queue size
-        '-analyzeduration 0 '  # Disable analysis duration limit
-        '-probesize 32M '  # Increased probe size
-        '-loglevel warning'  # Only show warnings and errors
-    ),
-    'options': (
-        '-vn '  # Disable video
-        '-acodec libopus '  # Use opus codec directly
-        '-b:a 128k '  # Reduced bitrate for stability
-        '-ar 48000 '  # Sample rate
-        '-ac 2 '  # Stereo
-        '-application voip '  # Optimize for voice
-        '-packet_loss 10 '  # Handle packet loss
-        '-frame_duration 20 '  # Frame duration
-        '-compression_level 10 '  # Maximum compression
-        '-vbr on '  # Variable bitrate
-        '-cutoff 20000 '  # Frequency cutoff
-        '-af "volume=1.0" '  # Volume normalization
-        '-bufsize 96k'  # Reduced buffer size
-    ),
-    'executable': str(Path('ffmpeg/bin/ffmpeg.exe' if os.name == 'nt' else 'ffmpeg/bin/ffmpeg'))
-}
-
-# Add shutdown handler
-@bot.event
-async def on_shutdown():
-    """Called when the bot is shutting down."""
-    print("\n🛑 Shutting down bot...")
-    # Disconnect from all voice channels
-    for guild in bot.guilds:
-        if guild.voice_client:
-            try:
-                await guild.voice_client.disconnect()
-            except:
-                pass
-    # Clear all players
-    players.clear()
-    print("✅ Bot shutdown complete.")
-
-def get_current_time():
-    """Get current time in UTC."""
-    return datetime.now(timezone.utc)
-
-# --- State Management Class ---
-class GuildPlayer:
-    """A class to manage all music player state for a single guild."""
-    def __init__(self, guild: discord.Guild):
-        self.guild = guild
-        self.queue = []
-        self.playback_history = []
-        self.loop_mode = 0  # 0: off, 1: track, 2: queue
-        self.current_track_url = None
-        self.player_message = None
-        self.current_track_info = None
-        self.start_time = None
-        self.last_update = None
-        self.pause_time = None  # Track when the player was paused
-        self.total_paused_time = 0  # Track total time spent paused
-        self.is_paused = False
-        self.last_position = 0  # Track the last known position
-        self.position_update_time = None  # Track when we last updated the position
-        self.voice_client = None  # Add this line
-
-    def get_elapsed_time(self) -> float:
-        """Calculate the actual elapsed time, accounting for pauses and voice client position."""
-        if not self.start_time:
-            return 0.0
-        
-        # If we have a voice client, use its position as the primary source
-        voice_client = self.guild.voice_client
-        if voice_client and voice_client.is_playing():
-            # Get position from voice client
-            position = voice_client.source.position if hasattr(voice_client.source, 'position') else 0
-            if position > 0:
-                self.last_position = position
-                self.position_update_time = get_current_time()
-                return position
-        
-        # Fallback to time-based calculation if no voice client position
-        current_time = get_current_time()
-        if self.is_paused and self.pause_time:
-            # If paused, use the time when we paused
-            elapsed = (self.pause_time - self.start_time).total_seconds() - self.total_paused_time
-        else:
-            # If playing, use current time
-            elapsed = (current_time - self.start_time).total_seconds() - self.total_paused_time
-        
-        # If we have a last known position and it's recent, use that as a base
-        if self.position_update_time and (current_time - self.position_update_time).total_seconds() < 5:
-            elapsed = max(elapsed, self.last_position)
-        
-        return max(0.0, elapsed)
-
-    def pause(self):
-        """Handle pausing the player."""
-        if not self.is_paused:
-            self.pause_time = get_current_time()
-            self.is_paused = True
-
-    def resume(self):
-        """Handle resuming the player."""
-        if self.is_paused and self.pause_time:
-            current_time = get_current_time()
-            self.total_paused_time += (current_time - self.pause_time).total_seconds()
-            self.pause_time = None
-            self.is_paused = False
-
-# This dictionary will hold all our GuildPlayer instances, one for each server.
-players = {}
-
-def get_player(guild: discord.Guild) -> GuildPlayer:
-    """Gets the GuildPlayer instance for a guild, creating it if it doesn't exist."""
-    if guild.id not in players:
-        players[guild.id] = GuildPlayer(guild)
-    return players[guild.id]
-
-# --- UI Controls View ---
-class MusicControls(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)  # Persistent view
-
-    async def handle_interaction(self, interaction: discord.Interaction, response: str, ephemeral: bool = True):
-        """Helper method to safely handle interaction responses."""
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(response, ephemeral=ephemeral)
-            else:
-                # If we've already responded, use followup
-                try:
-                    await interaction.followup.send(response, ephemeral=ephemeral)
-                except discord.errors.HTTPException as e:
-                    if e.code == 40060:  # Interaction already acknowledged
-                        # If followup also fails, try to send a new message
-                        await interaction.channel.send(response)
-                    else:
-                        raise
-        except discord.errors.HTTPException as e:
-            if e.code == 40060:  # Interaction already acknowledged
-                try:
-                    await interaction.channel.send(response)
-                except:
-                    pass  # Ignore if all message attempts fail
-            else:
-                raise
-
-    @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.blurple, custom_id="music_prev")
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = get_player(interaction.guild)
-        if len(player.playback_history) > 1:
-            # Add the current track to the front of the queue
-            if player.current_track_url:
-                player.queue.insert(0, player.current_track_url)
-            # Pop current and previous track URLs from history
-            player.playback_history.pop()
-            prev_track = player.playback_history.pop()
-            # Add the previous track to the front of the queue to be played next
-            player.queue.insert(0, prev_track)
-            
-            # Skip to the previous track
-            if interaction.guild.voice_client:
-                interaction.guild.voice_client.stop()
-                await self.handle_interaction(interaction, "⏮️ Playing previous track.")
-            else:
-                await self.handle_interaction(interaction, "❌ Not connected to voice channel.")
-        else:
-            await self.handle_interaction(interaction, "❌ No previous track in history.")
-
-    @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.blurple, custom_id="music_playpause")
-    async def play_pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = get_player(interaction.guild)
-        voice_client = interaction.guild.voice_client
-        if voice_client:
-            if voice_client.is_paused():
-                voice_client.resume()
-                player.resume()  # Update player state
-                await self.handle_interaction(interaction, "▶️ Resumed.")
-            elif voice_client.is_playing():
-                voice_client.pause()
-                player.pause()  # Update player state
-                await self.handle_interaction(interaction, "⏸️ Paused.")
-            else:
-                # If not playing but we have a queue, start playing
-                if player.queue:
-                    next_url = player.queue.pop(0)
-                    await play_track(await commands.Context.from_interaction(interaction), next_url)
-                    await self.handle_interaction(interaction, "▶️ Starting playback.")
-                else:
-                    await self.handle_interaction(interaction, "❌ Nothing in queue to play.")
-
-    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.blurple, custom_id="music_skip")
-    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        voice_client = interaction.guild.voice_client
-        if voice_client and voice_client.is_playing():
-            voice_client.stop()  # This will trigger play_next
-            await self.handle_interaction(interaction, "⏭️ Skipped.")
-        elif voice_client and not voice_client.is_playing() and player.queue:
-            # If not playing but we have a queue, start playing
-            next_url = player.queue.pop(0)
-            await play_track(await commands.Context.from_interaction(interaction), next_url)
-            await self.handle_interaction(interaction, "▶️ Starting next track.")
-        else:
-            await self.handle_interaction(interaction, "❌ Nothing to skip.")
-
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.blurple, custom_id="music_loop")
-    async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = get_player(interaction.guild)
-        player.loop_mode = (player.loop_mode + 1) % 3
-        
-        loop_status_map = {0: ("Off", discord.ButtonStyle.blurple), 1: ("Track", discord.ButtonStyle.green), 2: ("Queue", discord.ButtonStyle.green)}
-        status_text, style = loop_status_map[player.loop_mode]
-        
-        button.style = style
-        try:
-            await interaction.message.edit(view=self)  # Update the button color
-        except discord.NotFound:
-            pass  # Message might have been deleted
-        except Exception as e:
-            print(f"Error updating loop button: {e}")
-        
-        await self.handle_interaction(interaction, f"🔁 Loop mode set to **{status_text}**.")
-
-    @discord.ui.button(emoji="🛑", style=discord.ButtonStyle.danger, custom_id="music_stop")
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        player = get_player(interaction.guild)
-        voice_client = interaction.guild.voice_client
-        if voice_client:
-            player.queue.clear()
-            voice_client.stop()
-            await voice_client.disconnect()
-            if player.player_message:
-                try:
-                    await player.player_message.delete()
-                except discord.NotFound:
-                    pass
-            players.pop(interaction.guild.id, None)  # Clean up the player instance
-            await self.handle_interaction(interaction, "🛑 Playback stopped and queue cleared.")
-        else:
-            await self.handle_interaction(interaction, "❌ Not connected to a voice channel.")
-
-# --- Helper Functions ---
-def create_progress_bar(progress: float, duration: int) -> str:
-    """Creates a visual progress bar for the track with improved visualization."""
-    bar_length = 15  # Slightly shorter for cleaner look
-    filled_length = int(bar_length * progress)
+    # YouTube settings
+    YT_DLP_TIMEOUT = 60
+    YT_DLP_RETRIES = 5
+    MAX_VIDEO_DURATION = 600  # 10 minutes
     
-    # Use different characters for a more modern look
-    bar = '━' * filled_length + '─' * (bar_length - filled_length)
+    # Audio settings
+    AUDIO_QUALITY = '192K'
+    AUDIO_FORMAT = 'mp3'
     
-    # Add a small dot to show current position
-    if filled_length < bar_length:
-        bar = bar[:filled_length] + '●' + bar[filled_length + 1:]
-    else:
-        bar = bar[:-1] + '●'
-    
-    return f"`{bar}`"
+    # Queue settings
+    MAX_QUEUE_SIZE = 50
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def log(message: str, level: str = "INFO") -> None:
+    """Centralized logging function."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] [{level}] {message}")
+
+def is_url(text: str) -> bool:
+    """Check if text is a URL."""
+    url_patterns = [
+        r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+',
+        r'https?://youtu\.be/[\w-]+',
+        r'https?://(?:www\.)?spotify\.com/track/[\w]+',
+        r'https?://(?:www\.)?soundcloud\.com/[\w/-]+'
+    ]
+    return any(re.match(pattern, text) for pattern in url_patterns)
 
 def format_time(seconds: float) -> str:
-    """Formats seconds into MM:SS or HH:MM:SS format with leading zeros."""
-    # Convert float to int for formatting
-    seconds = int(seconds)
-    if seconds < 3600:
-        return f"{seconds // 60:02d}:{seconds % 60:02d}"
-    return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
-
-async def create_player_embed(info: dict, requester: discord.Member, player: GuildPlayer) -> discord.Embed:
-    """Creates an improved 'Now Playing' embed with a cleaner, more responsive design."""
-    try:
-        # Calculate progress
-        duration = info.get('duration', 0)
-        elapsed = player.get_elapsed_time()
-        
-        print(f"\n=== Creating Player Embed ===")
-        print(f"Start time: {player.start_time}")
-        print(f"Current time: {get_current_time()}")
-        print(f"Pause time: {player.pause_time}")
-        print(f"Total paused time: {player.total_paused_time}")
-        print(f"Elapsed time: {elapsed}")
-        print(f"Duration: {duration}")
-        
-        progress = min(1.0, elapsed / duration) if duration > 0 else 0.0
-        
-        # Create embed with a more modern color
-        embed = discord.Embed(
-            title="🎵 Now Playing",
-            color=discord.Color.from_rgb(88, 101, 242)
-        )
-        
-        # Add thumbnail with a slight border effect
-        if info.get('thumbnail'):
-            embed.set_thumbnail(url=info['thumbnail'])
-        
-        # Format the title and URL more cleanly
-        title = info.get('title', 'Unknown Title')
-        url = info.get('webpage_url', '#')
-        uploader = info.get('uploader', 'Unknown Artist')
-        
-        # Create a cleaner description with uploader info
-        embed.description = f"**[{title}]({url})**\n👤 {uploader}"
-        
-        # Add progress bar with time
-        progress_bar = create_progress_bar(progress, duration)
-        elapsed_str = format_time(elapsed)
-        duration_str = format_time(duration)
-        
-        # Create a more compact progress display
-        progress_text = f"{elapsed_str} {progress_bar} {duration_str}"
-        embed.add_field(
-            name="\u200b",
-            value=progress_text,
-            inline=False
-        )
-        
-        # Add metadata in a more compact way
-        metadata = []
-        if info.get('view_count'):
-            views = f"{int(info['view_count']):,}"
-            metadata.append(f"👁️ {views} views")
-        if info.get('like_count'):
-            likes = f"{int(info['like_count']):,}"
-            metadata.append(f"❤️ {likes} likes")
-        
-        if metadata:
-            embed.add_field(
-                name="\u200b",
-                value=" • ".join(metadata),
-                inline=False
-            )
-        
-        # Add requester info in a cleaner way
-        embed.add_field(
-            name="\u200b",
-            value=f"🎵 Requested by {requester.mention}",
-            inline=False
-        )
-        
-        # Add status footer with improved formatting
-        loop_status = {0: "Off", 1: "🔂 Track", 2: "🔁 Queue"}.get(player.loop_mode, "Off")
-        queue_size = len(player.queue)
-        queue_text = f"{queue_size} {'track' if queue_size == 1 else 'tracks'}"
-        
-        # Create a more informative footer
-        footer_text = f"{loop_status} • Queue: {queue_text}"
-        if player.loop_mode != 0:
-            footer_text = f"**{footer_text}**"
-        
-        embed.set_footer(text=footer_text)
-        
-        return embed
-    except Exception as e:
-        print(f"Error creating player embed: {str(e)}")
-        print(f"Error type: {type(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        # Return a basic embed if there's an error
-        embed = discord.Embed(
-            title="🎵 Now Playing",
-            description=f"**{info.get('title', 'Unknown Title')}**",
-            color=discord.Color.from_rgb(88, 101, 242)
-        )
-        return embed
-
-# --- Core Playback Logic ---
-async def play_next(ctx):
-    """The main playback loop that plays the next song in the queue."""
-    # Handle both Context and Interaction objects
-    guild = getattr(ctx, 'guild', None)
-    if not guild:
-        print("Error: No guild found in context")
-        return
-        
-    player = get_player(guild)
+    """Format seconds into MM:SS or HH:MM:SS."""
+    if seconds < 0:
+        return "0:00"
     
-    try:
-        print("\n=== Starting play_next ===")
-        print(f"Current track URL: {player.current_track_url}")
-        print(f"Queue size: {len(player.queue)}")
-        print(f"Loop mode: {player.loop_mode}")
-        
-        # Handle looping for the track that just finished
-        if player.current_track_url:
-            if player.loop_mode == 1:  # Loop track
-                print("Looping current track")
-                player.queue.insert(0, player.current_track_url)
-            elif player.loop_mode == 2:  # Loop queue
-                print("Looping queue - adding current track to end")
-                player.queue.append(player.current_track_url)
-
-        # Clean up the current track info
-        player.current_track_url = None
-        player.current_track_info = None
-        
-        # If the queue is not empty, play the next track
-        if player.queue:
-            next_url = player.queue.pop(0)
-            print(f"Playing next track: {next_url}")
-            await play_track(ctx, next_url)  # Don't pass msg_handler here
-        else:
-            print("Queue is empty, cleaning up")
-            # Queue is empty, clean up
-            if player.player_message:
-                try:
-                    await player.player_message.edit(content="✅ Queue finished. Add more songs!", embed=None, view=None)
-                except Exception as e:
-                    print(f"Error updating player message: {e}")
-            
-            # Optional: Disconnect after a period of inactivity
-            await asyncio.sleep(180)  # Wait 3 minutes
-            voice_client = guild.voice_client
-            if voice_client and not voice_client.is_playing() and not player.queue:
-                print("Disconnecting due to inactivity")
-                await voice_client.disconnect()
-                players.pop(guild.id, None)
-
-    except Exception as e:
-        print(f"\n=== CRITICAL ERROR in play_next ===")
-        print(f"Error: {str(e)}")
-        print(f"Error type: {type(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        
-        # Try to send error message
-        try:
-            if hasattr(ctx, 'channel') and ctx.channel:
-                await ctx.channel.send(f"❌ A critical playback error occurred: {str(e)}")
-            else:
-                await ctx.followup.send(f"❌ A critical playback error occurred: {str(e)}", ephemeral=True)
-        except Exception as send_error:
-            print(f"Failed to send error message: {send_error}")
-            print(f"Send error type: {type(send_error)}")
-            print(f"Send error traceback: {traceback.format_exc()}")
-
-async def play_track(ctx, url: str, msg_handler=None):
-    """Plays a single track from a URL."""
-    # Handle both Context and Interaction objects
-    if hasattr(ctx, 'guild'):
-        guild = ctx.guild
-        author = getattr(ctx, 'author', getattr(ctx, 'user', None))
-        channel = getattr(ctx, 'channel', None)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
     else:
-        guild = ctx.guild
-        author = getattr(ctx, 'user', None)
-        channel = getattr(ctx, 'channel', None)
+        return f"{minutes}:{secs:02d}"
+
+def create_progress_bar(current: float, total: float, length: int = 20) -> str:
+    """Create a progress bar string."""
+    if total <= 0:
+        return "█" * length
     
-    player = get_player(guild)
-    voice_client = guild.voice_client
-    temp_cookies_file = None
+    progress = min(current / total, 1.0)
+    filled = int(length * progress)
+    bar = "█" * filled + "░" * (length - filled)
+    return bar
 
-    try:
-        print(f"\n=== Starting play_track ===")
-        print(f"URL: {url}")
-        print(f"Voice client exists: {voice_client is not None}")
-        print(f"Voice client playing: {voice_client.is_playing() if voice_client else False}")
-        
-        # Clean up any existing player message
-        if player.player_message:
-            try:
-                print("Cleaning up existing player message")
-                await player.player_message.delete()
-            except discord.NotFound:
-                print("Old player message was already deleted")
-            except Exception as e:
-                print(f"Error deleting old player message: {e}")
-            player.player_message = None
-        
-        # Stop any existing playback
-        if voice_client and voice_client.is_playing():
-            print("Stopping existing playback")
-            voice_client.stop()
-            # Wait a moment for the stop to take effect
-            await asyncio.sleep(0.5)
-        
-        # Set current track info before anything else
-        player.current_track_url = url
-        player.current_track_info = None  # Will be set after extraction
-        player.start_time = get_current_time()
-        player.last_update = None
-        player.pause_time = None
-        player.total_paused_time = 0
-        player.is_paused = False
-        player.last_position = 0
-        player.position_update_time = None
-        
-        print(f"Player state reset - start time: {player.start_time}")
-        print(f"Current track URL set to: {player.current_track_url}")
-        
-        # Connect to voice channel if not already connected
-        if not voice_client:
-            if not author.voice:
-                error_msg = "❗ You must be in a voice channel to play music."
-                print(f"Sending error: {error_msg}")
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
-                else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
-            channel = author.voice.channel
-            print(f"Connecting to voice channel: {channel.name}")
-            print(f"Channel ID: {channel.id}")
-            print(f"Guild ID: {guild.id}")
-            print(f"Bot permissions in channel: {channel.permissions_for(guild.me)}")
+# ============================================================================
+# YT-DLP MANAGEMENT
+# ============================================================================
+
+class YTDlpManager:
+    """Manages yt-dlp installation and configuration."""
+    
+    @staticmethod
+    def update_yt_dlp() -> bool:
+        """Update yt-dlp to the latest version."""
+        try:
+            log("Checking yt-dlp version...")
             
-            # Check if bot has necessary permissions
-            required_permissions = [
-                'connect',
-                'speak'
-            ]
-            missing_permissions = []
-            bot_permissions = channel.permissions_for(guild.me)
+            # Check if yt-dlp is installed
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "show", "yt-dlp"],
+                capture_output=True, text=True, timeout=30
+            )
             
-            for permission in required_permissions:
-                if not getattr(bot_permissions, permission, False):
-                    missing_permissions.append(permission)
-            
-            if missing_permissions:
-                error_msg = f"❌ Bot is missing required permissions: {', '.join(missing_permissions)}"
-                print(f"Missing permissions: {missing_permissions}")
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
-                else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
-            
-            # Try to connect with better error handling
-            try:
-                print("Attempting voice connection...")
-                print(f"Channel type: {type(channel)}")
-                print(f"Channel permissions: {channel.permissions_for(guild.me)}")
-                print(f"Bot user: {guild.me}")
-                print(f"Bot status: {guild.me.status}")
+            if result.returncode == 0:
+                log("yt-dlp is installed, updating...")
+                update_result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+                    capture_output=True, text=True, timeout=120
+                )
                 
-                # Try a more robust connection approach
-                try:
-                    # First, try to disconnect if already connected
-                    if guild.voice_client:
-                        print("Disconnecting existing voice client...")
-                        await guild.voice_client.disconnect(force=True)
-                        await asyncio.sleep(1)  # Wait a moment
-                    
-                    # Try connection with different parameters
-                    voice_client = await channel.connect(
-                        timeout=30.0,  # Increased timeout
-                        self_deaf=True, 
-                        self_mute=False
-                    )
-                    print("Successfully connected to voice channel")
-                    
-                except Exception as first_attempt_error:
-                    print(f"First connection attempt failed: {first_attempt_error}")
-                    print("Trying alternative connection method...")
-                    
-                    # Try with different parameters
-                    voice_client = await channel.connect(
-                        timeout=15.0,
-                        self_deaf=True,
-                        self_mute=False
-                    )
-                    print("Successfully connected with alternative method")
-                    
-            except discord.errors.ConnectionClosed as e:
-                print(f"Discord connection closed: {e}")
-                print(f"Connection code: {e.code}")
-                print(f"Connection reason: {getattr(e, 'reason', 'No reason provided')}")
-                error_msg = f"❌ Discord connection failed (code {e.code}): {e.reason if hasattr(e, 'reason') else 'Unknown reason'}"
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
+                if update_result.returncode == 0:
+                    log("yt-dlp updated successfully")
+                    return True
                 else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
-            except discord.errors.ClientException as e:
-                print(f"Discord client exception: {e}")
-                error_msg = f"❌ Discord client error: {str(e)}"
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
-                else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
-            except asyncio.TimeoutError:
-                print("Voice connection timed out")
-                error_msg = "❌ Voice connection timed out. Please try again."
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
-                else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
-            except Exception as e:
-                print(f"Failed to connect to voice channel: {e}")
-                print(f"Error type: {type(e)}")
-                import traceback
-                print(f"Traceback: {traceback.format_exc()}")
+                    log(f"Failed to update yt-dlp: {update_result.stderr}", "WARNING")
+                    return False
+            else:
+                log("yt-dlp not found, installing...")
+                install_result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "yt-dlp"],
+                    capture_output=True, text=True, timeout=120
+                )
                 
-                # Provide a more specific error message based on the error type
-                if "timeout" in str(e).lower():
-                    error_msg = "❌ Voice connection timed out. Please try again."
-                elif "permission" in str(e).lower():
-                    error_msg = "❌ Permission denied. Make sure the bot has permission to join voice channels."
-                elif "unavailable" in str(e).lower():
-                    error_msg = "❌ Voice channel is unavailable. Please try a different channel."
+                if install_result.returncode == 0:
+                    log("yt-dlp installed successfully")
+                    return True
                 else:
-                    error_msg = f"❌ Failed to connect to voice channel: {str(e)}"
-                
-                if msg_handler:
-                    await msg_handler.send(error_msg)
-                elif hasattr(ctx, 'channel') and ctx.channel:
-                    await ctx.channel.send(error_msg)
-                else:
-                    await ctx.followup.send(error_msg, ephemeral=True)
-                return
-
-        # Create temporary cookies file
-        temp_cookies_file = create_temp_cookies_file()
-        create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
-
-        # Add cookies file to yt-dlp options if available
-        if temp_cookies_file:
-            ydl_opts['cookiefile'] = temp_cookies_file
-
-        # Create enhanced yt-dlp options for direct video extraction
-        enhanced_ydl_opts = ydl_opts.copy()
-        enhanced_ydl_opts.update({
-            'quiet': True,  # Reduce logging to avoid detection
-            'no_warnings': True,  # Suppress warnings
-            'extract_flat': False,  # We want full extraction for direct videos
-            'format': 'best[height<=720]/best',  # More compatible format selection
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Cache-Control': 'max-age=0',
-                'Referer': 'https://www.youtube.com/',
-                'Origin': 'https://www.youtube.com',
-            },
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web'],  # Try web client first
-                    'player_skip': ['js', 'configs'],
-                    'player_params': {
-                        'hl': 'en',
-                        'gl': 'US',
-                    }
-                }
-            },
-            'socket_timeout': 60,  # Increase timeout
-            'retries': 15,  # More retries
-            'fragment_retries': 15,
-            'extractor_retries': 15,
-        })
-
-        # Extract video information
-        print(f"\n=== Extracting video info for: {url} ===")
-        
-        # Try multiple extraction strategies
-        extraction_strategies = [
+                    log(f"Failed to install yt-dlp: {install_result.stderr}", "ERROR")
+                    return False
+                    
+        except Exception as e:
+            log(f"Error updating yt-dlp: {e}", "ERROR")
+            return False
+    
+    @staticmethod
+    def get_extraction_strategies() -> List[Dict[str, Any]]:
+        """Get yt-dlp extraction strategies."""
+        return [
             {
                 'name': 'Enhanced Web Client',
-                'options': enhanced_ydl_opts.copy()
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'best[height<=720]/best',
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Sec-Fetch-User': '?1',
+                        'Cache-Control': 'max-age=0',
+                        'Referer': 'https://www.youtube.com/',
+                        'Origin': 'https://www.youtube.com',
+                    },
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['web'],
+                            'player_skip': ['js', 'configs'],
+                            'player_params': {
+                                'hl': 'en',
+                                'gl': 'US',
+                            }
+                        }
+                    },
+                    'socket_timeout': Config.YT_DLP_TIMEOUT,
+                    'retries': Config.YT_DLP_RETRIES,
+                    'fragment_retries': Config.YT_DLP_RETRIES,
+                    'extractor_retries': Config.YT_DLP_RETRIES,
+                }
             },
             {
                 'name': 'Android Client',
-                'options': enhanced_ydl_opts.copy()
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'format': 'best[height<=720]/best',
+                    'http_headers': {
+                        'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['android'],
+                            'player_skip': ['js'],
+                        }
+                    },
+                    'socket_timeout': Config.YT_DLP_TIMEOUT,
+                    'retries': Config.YT_DLP_RETRIES,
+                }
             },
             {
                 'name': 'Minimal Headers',
@@ -882,8 +225,8 @@ async def play_track(ctx, url: str, msg_handler=None):
                         'Accept-Encoding': 'gzip, deflate',
                         'Connection': 'keep-alive',
                     },
-                    'socket_timeout': 30,
-                    'retries': 10,
+                    'socket_timeout': Config.YT_DLP_TIMEOUT,
+                    'retries': Config.YT_DLP_RETRIES,
                 }
             },
             {
@@ -900,8 +243,8 @@ async def play_track(ctx, url: str, msg_handler=None):
                         'Accept-Encoding': 'gzip, deflate',
                         'Connection': 'keep-alive',
                     },
-                    'socket_timeout': 30,
-                    'retries': 10,
+                    'socket_timeout': Config.YT_DLP_TIMEOUT,
+                    'retries': Config.YT_DLP_RETRIES,
                 }
             },
             {
@@ -927,8 +270,8 @@ async def play_track(ctx, url: str, msg_handler=None):
                             'skip': ['authcheck']
                         }
                     },
-                    'socket_timeout': 30,
-                    'retries': 10,
+                    'socket_timeout': Config.YT_DLP_TIMEOUT,
+                    'retries': Config.YT_DLP_RETRIES,
                 }
             },
             {
@@ -937,7 +280,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
-                    'format': 'best',  # Let yt-dlp choose any available format
+                    'format': 'best',
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -945,911 +288,704 @@ async def play_track(ctx, url: str, msg_handler=None):
                         'Accept-Encoding': 'gzip, deflate',
                         'Connection': 'keep-alive',
                     },
-                    'socket_timeout': 30,
-                    'retries': 10,
+                    'socket_timeout': Config.YT_DLP_TIMEOUT,
+                    'retries': Config.YT_DLP_RETRIES,
                 }
             }
         ]
+
+# ============================================================================
+# COOKIE MANAGEMENT
+# ============================================================================
+
+class CookieManager:
+    """Manages YouTube cookies for authentication."""
+    
+    @staticmethod
+    def get_cookies_content() -> Optional[str]:
+        """Get cookies content from environment variables."""
+        log("Checking YouTube cookies...")
         
-        # Add cookies to all strategies
-        for strategy in extraction_strategies:
-            if temp_cookies_file:
-                strategy['options']['cookiefile'] = temp_cookies_file
+        # Try to get all cookie parts
+        cookie_parts = []
+        part_num = 1
+        while True:
+            env_var = f'YOUTUBE_COOKIES_B64_{part_num}'
+            cookie_part = os.getenv(env_var)
+            if not cookie_part:
+                if part_num == 1:
+                    # Try the old single variable name for backward compatibility
+                    cookie_part = os.getenv('YOUTUBE_COOKIES_B64')
+                if not cookie_part:
+                    break
+            cookie_parts.append(cookie_part)
+            part_num += 1
         
-        # Try each strategy
-        info = None
+        if not cookie_parts:
+            log("No cookie environment variables found", "WARNING")
+            return None
+        
+        try:
+            # Combine and decode all parts
+            combined_b64 = ''.join(cookie_parts)
+            cookies_content = base64.b64decode(combined_b64).decode('utf-8')
+            
+            # Validate cookie content
+            if not cookies_content.strip():
+                log("Cookie content is empty", "ERROR")
+                return None
+                
+            # Check for required cookie fields
+            required_fields = ['youtube.com', 'VISITOR_INFO1_LIVE', 'LOGIN_INFO', 'SID', 'HSID', 'SSID']
+            found_fields = []
+            
+            for field in required_fields:
+                if field in cookies_content or f'www.{field}' in cookies_content:
+                    found_fields.append(field)
+            
+            log(f"Found cookie fields: {found_fields}")
+            
+            if 'youtube.com' not in cookies_content and 'www.youtube.com' not in cookies_content:
+                log("No YouTube domain cookies found", "ERROR")
+                return None
+                
+            log("Cookie validation successful")
+            return cookies_content
+            
+        except Exception as e:
+            log(f"Error decoding/validating cookies: {e}", "ERROR")
+            return None
+    
+    @staticmethod
+    def create_temp_cookies_file() -> Optional[str]:
+        """Create a temporary cookies file."""
+        cookies_content = CookieManager.get_cookies_content()
+        if not cookies_content:
+            return None
+            
+        try:
+            temp_file = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt')
+            temp_file.write(cookies_content)
+            temp_file.close()
+            log(f"Created temporary cookies file: {temp_file.name}")
+            return temp_file.name
+        except Exception as e:
+            log(f"Error creating temporary cookies file: {e}", "ERROR")
+            return None
+    
+    @staticmethod
+    def cleanup_temp_cookies_file(file_path: Optional[str]) -> None:
+        """Clean up the temporary cookies file."""
+        if file_path and os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+                log(f"Cleaned up temporary cookies file: {file_path}")
+            except Exception as e:
+                log(f"Error cleaning up temporary cookies file: {e}", "WARNING")
+
+# ============================================================================
+# MUSIC PLAYER
+# ============================================================================
+
+class GuildPlayer:
+    """Manages music playback for a guild."""
+    
+    def __init__(self, guild: discord.Guild):
+        self.guild = guild
+        self.queue: List[str] = []
+        self.current_track: Optional[str] = None
+        self.start_time: Optional[datetime] = None
+        self.is_playing = False
+        self.is_paused = False
+        self.loop = False
+        self.player_message: Optional[discord.Message] = None
+        self.progress_task: Optional[asyncio.Task] = None
+    
+    def get_elapsed_time(self) -> float:
+        """Get elapsed time of current track."""
+        if not self.start_time or not self.is_playing or self.is_paused:
+            return 0.0
+        return (datetime.now(timezone.utc) - self.start_time).total_seconds()
+    
+    def reset_state(self) -> None:
+        """Reset player state."""
+        self.start_time = datetime.now(timezone.utc)
+        self.is_playing = True
+        self.is_paused = False
+        log(f"Player state reset - start time: {self.start_time}")
+    
+    def pause(self) -> None:
+        """Pause playback."""
+        self.is_paused = True
+        log("Playback paused")
+    
+    def resume(self) -> None:
+        """Resume playback."""
+        self.is_paused = False
+        log("Playback resumed")
+    
+    def stop(self) -> None:
+        """Stop playback."""
+        self.is_playing = False
+        self.is_paused = False
+        self.current_track = None
+        self.start_time = None
+        log("Playback stopped")
+    
+    def add_to_queue(self, url: str) -> None:
+        """Add track to queue."""
+        if len(self.queue) < Config.MAX_QUEUE_SIZE:
+            self.queue.append(url)
+            log(f"Added track to queue: {url}")
+        else:
+            log("Queue is full", "WARNING")
+    
+    def get_next_track(self) -> Optional[str]:
+        """Get next track from queue."""
+        if self.queue:
+            track = self.queue.pop(0)
+            self.current_track = track
+            log(f"Next track: {track}")
+            return track
+        return None
+
+# Global player storage
+players: Dict[int, GuildPlayer] = {}
+
+def get_player(guild: discord.Guild) -> GuildPlayer:
+    """Get or create a player for a guild."""
+    if guild.id not in players:
+        players[guild.id] = GuildPlayer(guild)
+        log(f"Created new player for guild: {guild.name}")
+    return players[guild.id]
+
+# ============================================================================
+# VOICE CONNECTION MANAGEMENT
+# ============================================================================
+
+class VoiceManager:
+    """Manages voice connections."""
+    
+    @staticmethod
+    async def connect_to_voice(ctx: Union[commands.Context, discord.Interaction], 
+                             channel: discord.VoiceChannel) -> Optional[discord.VoiceClient]:
+        """Connect to a voice channel with proper error handling."""
+        try:
+            guild = getattr(ctx, 'guild', None) or getattr(ctx, 'guild_id', None)
+            if not guild:
+                log("No guild found", "ERROR")
+                return None
+            
+            # Check if already connected
+            if guild.voice_client and guild.voice_client.is_connected():
+                log("Already connected to voice channel")
+                return guild.voice_client
+            
+            # Connect to voice channel
+            log(f"Connecting to voice channel: {channel.name}")
+            voice_client = await channel.connect(timeout=Config.VOICE_CONNECT_TIMEOUT)
+            log("Successfully connected to voice channel")
+            return voice_client
+            
+        except asyncio.TimeoutError:
+            log("Voice connection timeout", "ERROR")
+            return None
+        except Exception as e:
+            log(f"Failed to connect to voice channel: {e}", "ERROR")
+            return None
+    
+    @staticmethod
+    async def disconnect_from_voice(guild: discord.Guild) -> None:
+        """Disconnect from voice channel."""
+        try:
+            if guild.voice_client and guild.voice_client.is_connected():
+                await guild.voice_client.disconnect()
+                log("Disconnected from voice channel")
+        except Exception as e:
+            log(f"Error disconnecting from voice channel: {e}", "WARNING")
+
+# ============================================================================
+# YOUTUBE EXTRACTION
+# ============================================================================
+
+class YouTubeExtractor:
+    """Handles YouTube video extraction."""
+    
+    @staticmethod
+    async def extract_video_info(url: str, cookies_file: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Extract video information using multiple strategies."""
+        log(f"Extracting video info for: {url}")
+        
+        strategies = YTDlpManager.get_extraction_strategies()
         last_error = None
         
-        for i, strategy in enumerate(extraction_strategies, 1):
-            print(f"Trying strategy {i}/6: {strategy['name']}")
-            
-            # Configure strategy-specific options
-            if strategy['name'] == 'Android Client':
-                strategy['options']['extractor_args'] = {
-                    'youtube': {
-                        'player_client': ['android'],
-                        'player_skip': ['js'],
-                    },
-                    'youtubetab': {
-                        'skip': ['authcheck']
-                    }
-                }
-            elif strategy['name'] == 'Minimal Headers':
-                # Add cookies if available
-                if temp_cookies_file:
-                    strategy['options']['cookiefile'] = temp_cookies_file
-                # Add auth check skip
-                strategy['options']['extractor_args'] = {
-                    'youtubetab': {
-                        'skip': ['authcheck']
-                    }
-                }
-            elif strategy['name'] == 'Mobile Client':
-                strategy['options']['extractor_args'] = {
-                    'youtube': {
-                        'player_client': ['android'],
-                        'player_skip': ['js', 'configs'],
-                    },
-                    'youtubetab': {
-                        'skip': ['authcheck']
-                    }
-                }
-                if temp_cookies_file:
-                    strategy['options']['cookiefile'] = temp_cookies_file
-            elif strategy['name'] == 'Enhanced Web Client':
-                # Add auth check skip to enhanced web client
-                if 'extractor_args' not in strategy['options']:
-                    strategy['options']['extractor_args'] = {}
-                strategy['options']['extractor_args']['youtubetab'] = {
-                    'skip': ['authcheck']
-                }
-            elif strategy['name'] == 'Skip Auth Check':
-                # Add cookies if available
-                if temp_cookies_file:
-                    strategy['options']['cookiefile'] = temp_cookies_file
-            
-            with yt_dlp.YoutubeDL(strategy['options']) as ydl:
-                print(f"Created yt-dlp instance for {strategy['name']}")
-                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                print(f"✓ {strategy['name']} extraction successful")
-                break  # Success! Exit the loop
+        for i, strategy in enumerate(strategies, 1):
+            try:
+                log(f"Trying strategy {i}/{len(strategies)}: {strategy['name']}")
                 
-            except yt_dlp.utils.DownloadError as e:
-                last_error = e
-                print(f"✗ {strategy['name']} failed: {str(e)}")
-                if "Sign in" in str(e):
-                    print(f"Bot detection triggered for {strategy['name']}, trying next strategy...")
-                    continue
-                elif "Video unavailable" in str(e):
-                    raise ValueError("This video is unavailable or private")
-                elif "Requested format is not available" in str(e):
-                    print(f"Format issue for {strategy['name']}, trying next strategy...")
-                    continue
-                else:
-                    print(f"Other error for {strategy['name']}: {str(e)}")
-                    continue
+                # Configure yt-dlp options
+                ydl_opts = strategy['options'].copy()
+                if cookies_file:
+                    ydl_opts['cookiefile'] = cookies_file
+                
+                # Create yt-dlp instance
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                
+                if info:
+                    log(f"Video info extracted successfully with {strategy['name']}")
+                    return info
+                    
             except Exception as e:
+                error_str = str(e)
+                log(f"Strategy {strategy['name']} failed: {error_str}")
                 last_error = e
-                print(f"✗ {strategy['name']} failed with exception: {str(e)}")
+                
+                # Continue to next strategy
                 continue
         
-        # If all strategies failed
-        if info is None:
-            print("All extraction strategies failed")
-            raise ValueError("Could not find suitable audio format for this video. The video may be restricted or unavailable.")
+        log("All extraction strategies failed", "ERROR")
+        if last_error:
+            raise ValueError(f"Failed to extract video info: {str(last_error)}")
+        else:
+            raise ValueError("Could not find suitable audio format for this video")
+    
+    @staticmethod
+    async def search_videos(query: str, cookies_file: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Search for videos on YouTube."""
+        log(f"Searching for: {query}")
         
-        print(f"Video info extracted successfully with {strategy['name']}")
-        
-        # Ensure voice client is still connected
-        if voice_client and not voice_client.is_connected():
-            print("Voice client disconnected during extraction, attempting to reconnect...")
-            try:
-                voice_client = await voice_client.connect(timeout=20.0, self_deaf=True)
-                print("Successfully reconnected to voice channel")
-            except Exception as e:
-                print(f"Failed to reconnect to voice channel: {e}")
-                raise ValueError(f"Voice connection lost and could not reconnect: {str(e)}")
-
-        # Validate the info dictionary
-        if not info:
-            print("No info returned from yt-dlp")
-            raise ValueError("No video information found")
-
-        # Ensure we have required fields
-        if not all(key in info for key in ['url', 'title']):
-            print(f"Video missing required fields: {info}")
-            raise ValueError("Incomplete video information")
-
-        # Add webpage_url field for consistency
-        info['webpage_url'] = url
-
-        # Process the video info
-        print("\n=== Video Info Available ===")
-        print(f"Title: {info.get('title', 'Not found')}")
-        print(f"Duration: {info.get('duration', 'Not found')}")
-        print(f"Uploader: {info.get('uploader', 'Not found')}")
-        print(f"View count: {info.get('view_count', 'Not found')}")
-        print(f"Like count: {info.get('like_count', 'Not found')}")
-        
-        # Get the audio stream URL
-        if 'url' not in info:
-            print("No direct URL found, extracting format...")
-            formats = info.get('formats', [])
-            audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-            if audio_formats:
-                best_audio = audio_formats[-1]
-                info['url'] = best_audio['url']
-            else:
-                raise ValueError("No suitable audio format found")
-
-        print(f"Using webpage URL: {info.get('webpage_url', 'Not found')}")
-        print(f"Using audio URL: {info.get('url', 'Not found')[:100]}...")
-
-        # After successful extraction, update the track info
-        player.current_track_info = info
-        if url not in player.playback_history:
-            player.playback_history.append(url)
-        
-        print(f"Track info set - Title: {info.get('title')}, Duration: {info.get('duration')}")
-
-        # Create audio source
         try:
-            print("Creating audio source...")
-            # Create audio source with optimized settings
-            source = discord.FFmpegOpusAudio(
-                info['url'],
-                **ffmpeg_options
-            )
+            # Use enhanced search options
+            search_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'default_search': 'ytsearch',
+                'noplaylist': True,
+                'socket_timeout': Config.YT_DLP_TIMEOUT,
+                'retries': Config.YT_DLP_RETRIES,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                }
+            }
             
-            # Configure source for better stability
-            source.read_size = 1920  # Reduced read size
-            source.packet_size = 960  # Standard packet size
+            if cookies_file:
+                search_opts['cookiefile'] = cookies_file
             
-            print("Audio source created successfully")
+            with yt_dlp.YoutubeDL(search_opts) as ydl:
+                results = ydl.extract_info(f"ytsearch:{query}", download=False)
             
-            # Start playback
-            print("Starting playback...")
-            voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(
-                handle_playback_complete(ctx, e), bot.loop
-            ))
-            print("Playback started successfully")
-            
-            # Start progress updates after confirming playback has started
-            if voice_client.is_playing():
-                print("Starting progress update task")
-                # Cancel any existing progress task
-                if hasattr(player, 'progress_task') and player.progress_task:
-                    try:
-                        player.progress_task.cancel()
-                    except:
-                        pass
-                player.progress_task = bot.loop.create_task(update_progress(ctx, player))
-                print("Progress update task started")
-            else:
-                print("Warning: Voice client not playing after source creation")
+            log("Search completed successfully")
+            return results
             
         except Exception as e:
-            print(f"Error creating/starting audio source: {str(e)}")
-            print(f"Error type: {type(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            # Clear current track info on error
-            player.current_track_url = None
-            player.current_track_info = None
-            raise ValueError(f"Failed to start playback: {str(e)}")
+            log(f"Search failed: {e}", "ERROR")
+            raise
 
-        # Create player message
-        try:
-            print("Creating player message")
-            embed = await create_player_embed(info, author, player)
-            view = MusicControls()
-            if hasattr(ctx, 'channel') and ctx.channel:
-                player.player_message = await ctx.channel.send(embed=embed, view=view)
-            else:
-                # For interactions, we need to use followup
-                player.player_message = await ctx.followup.send(embed=embed, view=view)
-            print("Player message sent successfully")
-        except Exception as e:
-            print(f"Error creating player message: {e}")
-            # Don't raise here, just log the error
-            # The playback will continue even if the message fails
+# ============================================================================
+# MESSAGE HANDLER
+# ============================================================================
 
-    except Exception as e:
-        print(f"\n=== Play Track Error ===")
-        print(f"Error: {str(e)}")
-        print(f"Error type: {type(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        
-        # Ensure we have a non-empty error message
-        error_msg = str(e) if str(e).strip() else f"Unknown error occurred (type: {type(e).__name__})"
-        try:
-            if msg_handler:
-                await msg_handler.send(f"❌ Error playing track: {error_msg}")
-            else:
-                # Fallback to direct message send if no msg_handler
-                if isinstance(ctx, commands.Context):
-                    await ctx.channel.send(f"❌ Error playing track: {error_msg}")
-                else:
-                    await ctx.followup.send(f"❌ Error playing track: {error_msg}", ephemeral=True)
-        except Exception as send_error:
-            print(f"Failed to send error message: {send_error}")
-            print(f"Send error type: {type(send_error)}")
-            print(f"Send error traceback: {traceback.format_exc()}")
-            if msg_handler:
-                print("\n=== Final Message Handler State ===")
-                print(msg_handler.get_debug_info())
-
-    finally:
-        # Clean up temporary cookies file
-        if temp_cookies_file:
-            cleanup_temp_cookies_file(temp_cookies_file)
-
-async def update_progress(ctx, player: GuildPlayer):
-    """Updates the progress bar every 5 seconds."""
-    # Handle both Context and Interaction objects
-    guild = getattr(ctx, 'guild', None)
-    author = getattr(ctx, 'author', getattr(ctx, 'user', None))
-    channel = getattr(ctx, 'channel', None)
-    
-    if not guild:
-        print("Error: No guild found in context for progress updates")
-        return
-        
-    update_count = 0
-    last_error_time = None
-    error_count = 0
-    last_position = 0
-    stuck_count = 0
-    
-    print("\n=== Starting Progress Update Task ===")
-    print(f"Current track URL: {player.current_track_url}")
-    print(f"Current track info: {player.current_track_info.get('title') if player.current_track_info else 'None'}")
-    print(f"Voice client exists: {guild.voice_client is not None}")
-    print(f"Voice client playing: {guild.voice_client.is_playing() if guild.voice_client else False}")
-    
-    while True:
-        try:
-            # Check if we should continue updating
-            if not player.current_track_url:
-                print("Stopping progress updates - no current track URL")
-                break
-                
-            if not guild.voice_client:
-                print("Stopping progress updates - no voice client")
-                break
-                
-            if not guild.voice_client.is_playing():
-                print("Stopping progress updates - not playing")
-                break
-                
-            current_time = get_current_time()
-            current_position = player.get_elapsed_time()
-            
-            # Log position updates periodically
-            if update_count % 10 == 0:
-                print(f"\nProgress Update #{update_count}")
-                print(f"Current position: {format_time(current_position)}")
-                print(f"Track duration: {format_time(player.current_track_info.get('duration', 0))}")
-                print(f"Voice client playing: {guild.voice_client.is_playing()}")
-                print(f"Voice client paused: {guild.voice_client.is_paused()}")
-                if hasattr(guild.voice_client.source, 'position'):
-                    print(f"Voice client position: {guild.voice_client.source.position:.1f}s")
-            
-            # Check if progress is stuck
-            if abs(current_position - last_position) < 0.1:
-                stuck_count += 1
-                if stuck_count >= 3:  # If stuck for 3 updates (15 seconds)
-                    print(f"Progress appears stuck at {current_position:.1f}s")
-                    # Try to force a position update
-                    if hasattr(guild.voice_client.source, 'position'):
-                        current_position = guild.voice_client.source.position
-                        player.last_position = current_position
-                        player.position_update_time = current_time
-                        print(f"Updated position from voice client: {current_position:.1f}s")
-            else:
-                stuck_count = 0
-                last_position = current_position
-            
-            # Update the player message
-            if player.player_message:
-                try:
-                    # Check if the message still exists
-                    try:
-                        await player.player_message.fetch()
-                    except discord.NotFound:
-                        print("Player message was deleted, creating new one")
-                        embed = await create_player_embed(
-                            player.current_track_info,
-                            author,
-                            player
-                        )
-                        # Use channel.send instead of interaction response
-                        if channel:
-                            player.player_message = await channel.send(embed=embed, view=MusicControls())
-                        continue
-                    
-                    # Update the existing message
-                    embed = await create_player_embed(
-                        player.current_track_info, 
-                        author, 
-                        player
-                    )
-                    try:
-                        await player.player_message.edit(embed=embed)
-                        update_count += 1
-                    except discord.NotFound:
-                        print("Message was deleted during update, creating new one")
-                        if channel:
-                            player.player_message = await channel.send(embed=embed, view=MusicControls())
-                    except discord.Forbidden:
-                        print("No permission to edit message, skipping update")
-                    except Exception as e:
-                        print(f"Error updating message: {str(e)}")
-                        error_count += 1
-                        if error_count >= 3:
-                            print("Too many errors, stopping progress updates")
-                            break
-                    
-                except Exception as e:
-                    print(f"Error in message update loop: {str(e)}")
-                    error_count += 1
-                    if error_count >= 3:
-                        print("Too many errors, stopping progress updates")
-                        break
-            
-            # Wait for next update
-            await asyncio.sleep(5)
-            
-        except asyncio.CancelledError:
-            print("Progress update task was cancelled")
-            break
-        except Exception as e:
-            print(f"Unexpected error in progress update: {str(e)}")
-            print(f"Error type: {type(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            await asyncio.sleep(5)
-
-    print("\n=== Progress Update Task Ended ===")
-    print(f"Final update count: {update_count}")
-    print(f"Final position: {format_time(last_position)}")
-    if not player.current_track_url:
-        print("Reason: No current track URL")
-    elif not guild.voice_client:
-        print("Reason: No voice client")
-    elif not guild.voice_client.is_playing():
-        print("Reason: Not playing")
-    else:
-        print("Reason: Unknown")
-
-# --- Bot Commands ---
 class MessageHandler:
-    """Helper class to handle message state and sending."""
+    """Handles Discord message interactions."""
+    
     def __init__(self, interaction: discord.Interaction):
         self.interaction = interaction
-        self.message = None
-        self.initialized = False
-        self.last_error = None
-        self.message_history = []
-        self.last_send_attempt = None
-        self.last_send_error = None
-        self.thinking_message = None  # Track the thinking message
-
-    def _log_message(self, action: str, status: str, details: str = ""):
-        """Log message handling actions for debugging."""
-        log_entry = f"[MessageHandler] {action}: {status} {details}".strip()
-        self.message_history.append(log_entry)
-        print(log_entry)
-
-    async def initialize(self):
-        """Initialize the message handler, either with defer or new message."""
+        self.thinking_message: Optional[discord.WebhookMessage] = None
+        self.last_update = time.time()
+    
+    async def initialize(self) -> None:
+        """Initialize the message handler."""
         try:
-            self._log_message("Initialize", "Attempting to defer response")
-            await self.interaction.response.defer(ephemeral=False)
-            self.initialized = True
-            self.thinking_message = await self.interaction.original_response()  # Fix: await the coroutine
-            self._log_message("Initialize", "Success", "Response deferred")
-        except discord.NotFound as e:
-            self._log_message("Initialize", "Failed", f"Interaction expired: {str(e)}")
-            self.message = await self.interaction.channel.send("🔍 Searching for your song...")
-            self.initialized = True
-            self._log_message("Initialize", "Fallback", "Sent new message")
+            log("Initializing message handler")
+            await self.interaction.response.defer(thinking=True)
+            self.thinking_message = await self.interaction.original_response()
+            log("Message handler initialized successfully")
         except Exception as e:
-            self.last_error = e
-            self._log_message("Initialize", "Error", f"Unexpected error: {str(e)}")
-            self.message = await self.interaction.channel.send("🔍 Searching for your song...")
-            self.initialized = True
-            self._log_message("Initialize", "Recovery", "Sent new message after error")
-
-    async def send(self, content: str, ephemeral: bool = False):
-        """Send or update a message with detailed error tracking."""
+            log(f"Failed to initialize message handler: {e}", "ERROR")
+    
+    async def send(self, content: str, ephemeral: bool = False) -> None:
+        """Send a message."""
         try:
-            self.last_send_attempt = content
-            if not content or not content.strip():
-                self._log_message("Send", "Error", "Empty content provided")
-                content = "An error occurred, but no details were provided."
-            
-            # First try to update the thinking message if it exists
             if self.thinking_message:
-                try:
-                    self._log_message("Send", "Updating", f"Thinking message with content: {content[:50]}...")
-                    await self.thinking_message.edit(content=content)
-                    self.message = self.thinking_message  # Update our message reference
-                    self._log_message("Send", "Success", "Thinking message updated")
-                    return
-                except discord.NotFound:
-                    self._log_message("Send", "Failed", "Thinking message not found")
-                    self.thinking_message = None
-                except Exception as e:
-                    self._log_message("Send", "Error", f"Failed to update thinking message: {str(e)}")
-                    self.thinking_message = None
-            
-            # If we have an existing message, try to update it
-            if self.message:
-                try:
-                    self._log_message("Send", "Updating", f"Existing message with content: {content[:50]}...")
-                    await self.message.edit(content=content)
-                    self._log_message("Send", "Success", "Message updated")
-                except discord.NotFound:
-                    self._log_message("Send", "Failed", "Message not found, creating new one")
-                    self.message = await self.interaction.channel.send(content)
-                    self._log_message("Send", "Success", "New message created")
-            # If we're initialized but have no message, try followup
-            elif self.initialized:
-                try:
-                    self._log_message("Send", "Attempting", f"Followup send with content: {content[:50]}...")
-                    await self.interaction.followup.send(content, ephemeral=ephemeral)
-                    self._log_message("Send", "Success", "Followup sent")
-                except discord.NotFound as e:
-                    self._log_message("Send", "Failed", f"Followup expired: {str(e)}")
-                    self.message = await self.interaction.channel.send(content)
-                    self._log_message("Send", "Fallback", "Sent new message")
-                except Exception as e:
-                    self.last_send_error = e
-                    self._log_message("Send", "Error", f"Followup error: {str(e)}")
-                    self.message = await self.interaction.channel.send(content)
-                    self._log_message("Send", "Recovery", "Sent new message after error")
-            # If we're not initialized, send a new message
+                await self.thinking_message.edit(content=content)
+                log("Message sent successfully")
             else:
-                self._log_message("Send", "Initial", f"First message with content: {content[:50]}...")
-                self.message = await self.interaction.channel.send(content)
-                self.initialized = True
-                self._log_message("Send", "Success", "First message sent")
+                if ephemeral:
+                    await self.interaction.followup.send(content=content, ephemeral=True)
+                else:
+                    await self.interaction.followup.send(content=content)
+                log("Fallback message sent")
         except Exception as e:
-            self.last_send_error = e
-            self._log_message("Send", "Error", f"Unexpected error: {str(e)}")
-            if not self.message:
-                try:
-                    self.message = await self.interaction.channel.send(content)
-                    self.initialized = True
-                    self._log_message("Send", "Recovery", "Sent new message after error")
-                except Exception as send_error:
-                    self._log_message("Send", "Critical", f"Failed to send message: {str(send_error)}")
-                    print(f"CRITICAL: Failed to send message after all attempts: {str(send_error)}")
-                    print(f"Original error: {str(e)}")
-                    print(f"Message history: {self.message_history}")
+            log(f"Failed to send message: {e}", "ERROR")
 
-    def get_debug_info(self) -> str:
-        """Get debug information about the message handler's state."""
-        return (
-            f"MessageHandler State:\n"
-            f"Initialized: {self.initialized}\n"
-            f"Has Message: {self.message is not None}\n"
-            f"Has Thinking Message: {self.thinking_message is not None}\n"
-            f"Last Error: {str(self.last_error) if self.last_error else 'None'}\n"
-            f"Last Send Attempt: {self.last_send_attempt}\n"
-            f"Last Send Error: {str(self.last_send_error) if self.last_send_error else 'None'}\n"
-            f"Message History:\n" + "\n".join(self.message_history)
+# ============================================================================
+# MUSIC CONTROLS
+# ============================================================================
+
+class MusicControls(discord.ui.View):
+    """Music control buttons."""
+    
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    async def handle_interaction(self, interaction: discord.Interaction, response: str, ephemeral: bool = True) -> None:
+        """Handle button interactions."""
+        try:
+            await interaction.response.send_message(response, ephemeral=ephemeral)
+        except Exception as e:
+            log(f"Failed to handle interaction: {e}", "ERROR")
+    
+    @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.blurple, custom_id="music_prev")
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_interaction(interaction, "⏮️ Previous track functionality coming soon!")
+    
+    @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.blurple, custom_id="music_playpause")
+    async def play_pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_interaction(interaction, "⏯️ Play/Pause functionality coming soon!")
+    
+    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.blurple, custom_id="music_skip")
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_interaction(interaction, "⏭️ Skip functionality coming soon!")
+    
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.blurple, custom_id="music_loop")
+    async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_interaction(interaction, "🔁 Loop functionality coming soon!")
+    
+    @discord.ui.button(emoji="🛑", style=discord.ButtonStyle.danger, custom_id="music_stop")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_interaction(interaction, "🛑 Stop functionality coming soon!")
+
+# ============================================================================
+# EMBED CREATION
+# ============================================================================
+
+async def create_player_embed(info: Dict[str, Any], requester: discord.Member, player: GuildPlayer) -> discord.Embed:
+    """Create a player embed."""
+    embed = discord.Embed(
+        title="🎵 Now Playing",
+        description=f"**[{info.get('title', 'Unknown Title')}]({info.get('webpage_url', '')})**",
+        color=0x00ff00
+    )
+    
+    # Add video information
+    duration = info.get('duration', 0)
+    views = info.get('view_count', 0)
+    uploader = info.get('uploader', 'Unknown')
+    
+    embed.add_field(
+        name="📊 Info",
+        value=f"👤 **Uploader:** {uploader}\n"
+              f"👁️ **Views:** {int(views):,}\n"
+              f"⏱️ **Duration:** {format_time(duration)}",
+        inline=True
+    )
+    
+    # Add queue information
+    queue_size = len(player.queue)
+    embed.add_field(
+        name="📋 Queue",
+        value=f"🎵 **Tracks:** {queue_size}\n"
+              f"🔁 **Loop:** {'On' if player.loop else 'Off'}",
+        inline=True
+    )
+    
+    # Add progress bar if playing
+    if player.is_playing and not player.is_paused:
+        elapsed = player.get_elapsed_time()
+        progress = elapsed / duration if duration > 0 else 0
+        progress_bar = create_progress_bar(progress, 1.0)
+        
+        embed.add_field(
+            name="⏱️ Progress",
+            value=f"`{progress_bar}`\n"
+                  f"`{format_time(elapsed)} / {format_time(duration)}`",
+            inline=False
         )
+    
+    embed.set_footer(text=f"Requested by {requester.display_name}")
+    embed.timestamp = datetime.now()
+    
+    return embed
+
+# ============================================================================
+# MUSIC PLAYBACK
+# ============================================================================
+
+async def play_track(ctx: Union[commands.Context, discord.Interaction], url: str, 
+                    msg_handler: Optional[MessageHandler] = None) -> None:
+    """Play a track from URL."""
+    log(f"Starting play_track for URL: {url}")
+    
+    # Get guild and voice channel
+    guild = getattr(ctx, 'guild', None) or getattr(ctx, 'guild_id', None)
+    if not guild:
+        log("No guild found", "ERROR")
+        return
+    
+    # Get user's voice channel
+    user = getattr(ctx, 'author', None) or getattr(ctx, 'user', None)
+    if not user or not user.voice or not user.voice.channel:
+        if msg_handler:
+            await msg_handler.send("❌ You need to be in a voice channel to use this command!")
+        return
+    
+    voice_channel = user.voice.channel
+    
+    try:
+        # Connect to voice channel
+        voice_client = await VoiceManager.connect_to_voice(ctx, voice_channel)
+        if not voice_client:
+            if msg_handler:
+                await msg_handler.send("❌ Failed to connect to voice channel!")
+            return
+        
+        # Create temporary cookies file
+        cookies_file = CookieManager.create_temp_cookies_file()
+        
+        try:
+            # Extract video info
+            info = await YouTubeExtractor.extract_video_info(url, cookies_file)
+            if not info:
+                if msg_handler:
+                    await msg_handler.send("❌ Failed to extract video information!")
+                return
+            
+            # Get audio URL
+            audio_url = info.get('url')
+            if not audio_url:
+                if msg_handler:
+                    await msg_handler.send("❌ No audio URL found!")
+                return
+            
+            # Get or create player
+            player = get_player(guild)
+            player.current_track = url
+            player.reset_state()
+            
+            # Play audio
+            voice_client.play(
+                discord.FFmpegPCMAudio(
+                    audio_url,
+                    **{
+                        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                        'options': '-vn -acodec libopus -b:a 192k'
+                    }
+                ),
+                after=lambda error: asyncio.create_task(handle_playback_complete(ctx, error))
+            )
+            
+            # Create and send player embed
+            embed = await create_player_embed(info, user, player)
+            if msg_handler:
+                await msg_handler.send(embed=embed)
+            
+            log("Track started successfully")
+            
+        finally:
+            # Clean up cookies file
+            if cookies_file:
+                CookieManager.cleanup_temp_cookies_file(cookies_file)
+    
+    except Exception as e:
+        log(f"Error in play_track: {e}", "ERROR")
+        if msg_handler:
+            await msg_handler.send(f"❌ Error playing track: {str(e)}")
+
+async def handle_playback_complete(ctx: Union[commands.Context, discord.Interaction], error: Optional[Exception]) -> None:
+    """Handle playback completion."""
+    if error:
+        log(f"Playback error: {error}", "ERROR")
+    
+    # Play next track in queue
+    await play_next(ctx)
+
+async def play_next(ctx: Union[commands.Context, discord.Interaction]) -> None:
+    """Play next track in queue."""
+    guild = getattr(ctx, 'guild', None) or getattr(ctx, 'guild_id', None)
+    if not guild:
+        return
+    
+    player = get_player(guild)
+    next_track = player.get_next_track()
+    
+    if next_track:
+        await play_track(ctx, next_track)
+    else:
+        player.stop()
+        log("No more tracks in queue")
+
+# ============================================================================
+# COMMANDS
+# ============================================================================
 
 @bot.tree.command(name="play", description="Play a song or playlist from YouTube")
 @app_commands.describe(query="A song name or URL (YouTube, Spotify, SoundCloud, etc.)")
 async def play_command(interaction: discord.Interaction, query: str):
-    """Play a song from YouTube."""
-    print(f"\n=== Starting Play Command ===")
-    print(f"Query: {query}")
-    print(f"User: {interaction.user.display_name}")
-    print(f"Channel: {interaction.channel.name}")
+    """Play command handler."""
+    log(f"Play command received: {query}")
     
     # Initialize message handler
     msg_handler = MessageHandler(interaction)
     await msg_handler.initialize()
     
     try:
-        # Check if query is a YouTube URL
-        is_youtube_url = any(domain in query.lower() for domain in ['youtube.com', 'youtu.be', 'www.youtube.com'])
-        
-        if is_youtube_url:
-            print(f"Detected YouTube URL, treating as direct video extraction")
-            # For direct URLs, we'll extract the video ID and process directly
+        if is_url(query):
+            log("Detected URL, treating as direct video")
             await play_track(interaction, query, msg_handler)
         else:
-            print(f"Treating as search query")
-            # For search queries, use the search functionality
+            log("Treating as search query")
             await search_and_play(interaction, query, msg_handler)
-            
+    
     except Exception as e:
-        print(f"=== Play Command Error ===")
-        print(f"Error: {str(e)}")
-        print(f"Error type: {type(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        
-        # Send error message
-        error_msg = str(e)
-        await msg_handler.send(f"❌ Error processing your request: {error_msg}")
-        
-        print(f"=== Message Handler Debug Info ===")
-        print(msg_handler.get_debug_info())
+        log(f"Error in play command: {e}", "ERROR")
+        await msg_handler.send(f"❌ Error: {str(e)}")
 
-async def search_and_play(ctx, query: str, msg_handler=None):
-    """Search for a song and play it."""
-    print(f"\n=== Starting search for: {query} ===")
+async def search_and_play(ctx: Union[commands.Context, discord.Interaction], query: str, 
+                         msg_handler: Optional[MessageHandler] = None) -> None:
+    """Search for and play a track."""
+    log(f"Searching for: {query}")
     
     # Create temporary cookies file
-    temp_cookies_file = create_temp_cookies_file()
-    create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
-
+    cookies_file = CookieManager.create_temp_cookies_file()
+    
     try:
-        # Create enhanced yt-dlp options for search
-        enhanced_ydl_opts = ydl_opts.copy()
-        enhanced_ydl_opts.update({
-            'quiet': True,  # Reduce logging to avoid detection
-            'no_warnings': True,  # Suppress warnings
-            'extract_flat': True,  # We want flat extraction for search
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Cache-Control': 'max-age=0',
-                'Referer': 'https://www.youtube.com/',
-                'Origin': 'https://www.youtube.com',
-            },
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['dash', 'hls'],
-                    'player_client': ['web'],  # Try web client first
-                    'player_skip': ['js', 'configs'],
-                    'player_params': {
-                        'hl': 'en',
-                        'gl': 'US',
-                    }
-                }
-            },
-            'socket_timeout': 60,  # Increase timeout
-            'retries': 15,  # More retries
-            'fragment_retries': 15,
-            'extractor_retries': 15,
-        })
-
-        # Add cookies file to yt-dlp options if available
-        if temp_cookies_file:
-            enhanced_ydl_opts['cookiefile'] = temp_cookies_file
-
-        # Extract video information
-        search_url = f"ytsearch:{query}"
-        try:
-            with yt_dlp.YoutubeDL(enhanced_ydl_opts) as ydl:
-                print("Created enhanced yt-dlp instance for search")
-                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(search_url, download=False))
-                print(f"Search completed successfully")
-        except yt_dlp.utils.DownloadError as e:
-            print(f"yt-dlp DownloadError during search: {str(e)}")
-            if "Video unavailable" in str(e):
-                raise ValueError("Search failed - videos unavailable")
-            elif "Sign in" in str(e):
-                print("YouTube bot detection during search, trying alternative method...")
-                # Try alternative search with different options
-                try:
-                    fallback_opts = enhanced_ydl_opts.copy()
-                    fallback_opts.update({
-                        'player_client': ['android'],  # Try android client
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                            'Accept-Language': 'en-US,en;q=0.5',
-                            'Accept-Encoding': 'gzip, deflate',
-                            'Connection': 'keep-alive',
-                            'Upgrade-Insecure-Requests': '1',
-                        }
-                    })
-                    
-                    with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
-                        print("Trying fallback search with android client...")
-                        info = await bot.loop.run_in_executor(None, lambda: ydl2.extract_info(search_url, download=False))
-                        print("Fallback search successful")
-                except Exception as fallback_error:
-                    print(f"Fallback search also failed: {fallback_error}")
-                    raise ValueError("Search failed due to YouTube bot detection")
-            else:
-                raise ValueError(f"Search error: {str(e)}")
-        except yt_dlp.utils.ExtractorError as e:
-            print(f"yt-dlp ExtractorError during search: {str(e)}")
-            raise ValueError(f"Could not perform search: {str(e)}")
-        except Exception as e:
-            print(f"Error during yt-dlp search: {str(e)}")
-            print(f"Error type: {type(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            raise ValueError(f"Error during search: {str(e)}")
-
-        # Process search results
-        print(f"Raw search results type: {type(info)}")
-        print(f"Raw search results keys: {info.keys() if isinstance(info, dict) else 'Not a dict'}")
+        # Search for videos
+        results = await YouTubeExtractor.search_videos(query, cookies_file)
+        if not results or 'entries' not in results or not results['entries']:
+            if msg_handler:
+                await msg_handler.send("❌ No search results found!")
+            return
         
-        if not info:
-            print("No info returned from yt-dlp")
-            raise ValueError("No video information found")
-
-        # For search results, validate entries
-        if 'entries' in info:
-            print(f"Found {len(info['entries'])} entries in search results")
-            if not info['entries']:
-                print("Empty entries list")
-                raise ValueError("No search results found")
-            
-            # Filter and validate entries with detailed debug info
-            valid_entries = []
-            for i, entry in enumerate(info['entries']):
-                print(f"\nProcessing entry {i + 1}:")
-                print(f"Entry type: {type(entry)}")
-                print(f"Entry keys: {entry.keys() if isinstance(entry, dict) else 'Not a dict'}")
-                print(f"Title: {entry.get('title', 'NO TITLE')}")
-                print(f"Views: {entry.get('view_count', 'NO VIEWS')}")
-                print(f"Duration: {entry.get('duration', 'NO DURATION')}")
-                print(f"URL: {entry.get('url', 'NO URL')}")
-                
-                if entry and isinstance(entry, dict):
-                    # For search results, use 'url' instead of 'webpage_url'
-                    if 'url' in entry and 'title' in entry:
-                        # Add webpage_url field for consistency
-                        entry['webpage_url'] = entry['url']
-                        valid_entries.append(entry)
-                        print("✓ Entry is valid")
-                    else:
-                        print("✗ Entry filtered out - missing required fields")
-                        print(f"Missing fields: {[k for k in ['url', 'title'] if k not in entry]}")
-                else:
-                    print(f"✗ Entry filtered out - invalid type: {type(entry)}")
-            
-            print(f"\nFound {len(valid_entries)} valid entries after filtering")
-            if not valid_entries:
-                print("No valid entries found after filtering")
-                raise ValueError("No valid search results found")
-            info['entries'] = valid_entries
-        # For single videos, validate required fields
-        elif not all(key in info for key in ['url', 'title']):
-            print(f"Single video missing required fields: {info}")
-            raise ValueError("Incomplete video information")
-        else:
-            # Add webpage_url field for consistency
-            info['webpage_url'] = info['url']
-
-        print("\n=== Processing search results ===")
-        if 'entries' in info:
-            print("Processing search results as entries")
-            entries = info['entries']
-            entries.sort(key=lambda x: (
-                x.get('view_count', 0),
-                x.get('like_count', 0),
-                x.get('duration', 0)
-            ), reverse=True)
-            
-            best_entry = entries[0]
-            print(f"Best entry: {best_entry['title']}")
-            print(f"URL: {best_entry['webpage_url']}")
-            print(f"Views: {best_entry.get('view_count', 0)}")
-            
-            # Only add to queue if not already playing
-            guild = getattr(ctx, 'guild', None)
-            if not guild or not guild.voice_client or not guild.voice_client.is_playing():
-                print("No active playback, starting play_track")
-                await play_track(ctx, best_entry['webpage_url'], msg_handler)
-            else:
-                print("Already playing, adding to queue")
-                player = get_player(guild)
-                player.queue.append(best_entry['webpage_url'])
-                await msg_handler.send(
-                    f"🎵 Added **[{best_entry['title']}]({best_entry['webpage_url']})** to the queue.\n"
-                    f"👁️ {int(best_entry.get('view_count', 0)):,} views • "
-                    f"⏱️ {format_time(best_entry.get('duration', 0))}"
-                )
-        else:
-            print("Processing single video result")
-            print(f"Title: {info['title']}")
-            print(f"URL: {info['webpage_url']}")
-            print(f"Views: {info.get('view_count', 0)}")
-            
-            # Only add to queue if not already playing
-            guild = getattr(ctx, 'guild', None)
-            if not guild or not guild.voice_client or not guild.voice_client.is_playing():
-                print("No active playback, starting play_track")
-                await play_track(ctx, info['webpage_url'], msg_handler)
-            else:
-                print("Already playing, adding to queue")
-                player = get_player(guild)
-                player.queue.append(info['webpage_url'])
-                await msg_handler.send(
-                    f"🎵 Added **[{info['title']}]({info['webpage_url']})** to the queue.\n"
-                    f"👁️ {int(info.get('view_count', 0)):,} views • "
-                    f"⏱️ {format_time(info.get('duration', 0))}"
-                )
-                
+        # Get best result
+        best_entry = results['entries'][0]
+        if not best_entry:
+            if msg_handler:
+                await msg_handler.send("❌ No valid video found!")
+            return
+        
+        # Check video duration
+        duration = best_entry.get('duration', 0)
+        if duration > Config.MAX_VIDEO_DURATION:
+            if msg_handler:
+                await msg_handler.send(f"❌ Video is too long! Maximum duration is {Config.MAX_VIDEO_DURATION // 60} minutes.")
+            return
+        
+        # Play the track
+        await play_track(ctx, best_entry['webpage_url'], msg_handler)
+        
     except Exception as e:
-        print(f"\n=== Search Error ===")
-        print(f"Error: {str(e)}")
-        print(f"Error type: {type(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        
-        # Send error message
-        error_msg = str(e)
+        log(f"Error in search_and_play: {e}", "ERROR")
         if msg_handler:
-            await msg_handler.send(f"❌ {error_msg}")
-        else:
-            # Fallback to direct message send if no msg_handler
-            if hasattr(ctx, 'channel') and ctx.channel:
-                await ctx.channel.send(f"❌ {error_msg}")
-            else:
-                await ctx.followup.send(f"❌ {error_msg}", ephemeral=True)
+            await msg_handler.send(f"❌ Error: {str(e)}")
     
     finally:
-        # Clean up temporary cookies file
-        if temp_cookies_file:
-            cleanup_temp_cookies_file(temp_cookies_file)
+        # Clean up cookies file
+        if cookies_file:
+            CookieManager.cleanup_temp_cookies_file(cookies_file)
 
-async def handle_playback_complete(ctx, error):
-    """Handle playback completion or errors."""
-    if error:
-        print(f"\n=== Playback Error ===")
-        print(f"Error: {error}")
-        print(f"Error type: {type(error)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        
-        # Try to reconnect if it's a connection error
-        if isinstance(error, discord.errors.ConnectionClosed):
-            try:
-                # Handle both Context and Interaction objects
-                guild = getattr(ctx, 'guild', None)
-                if guild and guild.voice_client:
-                    await guild.voice_client.disconnect(force=True)
-                    await guild.voice_client.connect(reconnect=True)
-                    print("Successfully reconnected to voice channel")
-            except Exception as e:
-                print(f"Failed to reconnect: {e}")
-    
-    print("Calling play_next from handle_playback_complete")
-    await play_next(ctx)
+# ============================================================================
+# BOT SETUP
+# ============================================================================
 
-# --- Bot Events ---
+# Initialize bot
+intents = discord.Intents.default()
+intents.message_content = True
+intents.voice_states = True
+bot = commands.Bot(command_prefix=Config.COMMAND_PREFIX, intents=intents, help_command=None)
+
+# ============================================================================
+# BOT EVENTS
+# ============================================================================
+
 @bot.event
 async def on_ready():
-    """Called when the bot is ready and connected."""
-    print(f"✅ Bot ready as {bot.user}")
-    bot.add_view(MusicControls())  # Now valid with custom_ids
+    """Called when the bot is ready."""
+    log(f"Bot ready as {bot.user}")
+    bot.add_view(MusicControls())
     await bot.tree.sync()
-    print("🔁 Commands synced")
+    log("Commands synced")
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    """Handles voice state changes, like the bot being disconnected."""
-    # Only handle the bot's own voice state changes
+    """Handle voice state changes."""
+    # Only handle bot's own voice state changes
     if member.id != bot.user.id:
         return
-        
-    # Bot was disconnected from voice channel
+    
+    # Bot was disconnected
     if before.channel and not after.channel:
         guild_id = member.guild.id
         if guild_id in players:
             player = players[guild_id]
-            if player.player_message:
-                try:
-                    await player.player_message.delete()
-                except discord.NotFound:
-                    pass
-            
-            # Try to reconnect if it was an unexpected disconnect
-            try:
-                if member.guild.voice_client and member.guild.voice_client.is_connected():
-                    await member.guild.voice_client.disconnect(force=True)
-                await member.guild.voice_client.connect(reconnect=True)
-                print("Successfully reconnected to voice channel")
-            except Exception as e:
-                print(f"Failed to reconnect to voice channel: {e}")
-                players.pop(guild_id, None)  # Clean up the player instance if reconnection fails
+            player.stop()
+            log(f"Bot disconnected from voice in guild {guild_id}")
 
-def force_kill_python_processes():
-    """Force kill any remaining Python processes."""
+# ============================================================================
+# SHUTDOWN HANDLING
+# ============================================================================
+
+def cleanup_processes():
+    """Clean up any remaining processes."""
     current_pid = os.getpid()
     for proc in psutil.process_iter(['pid', 'name']):
         try:
-            if proc.info['name'] and 'python' in proc.info['name'].lower() and proc.info['pid'] != current_pid:
+            if (proc.info['name'] and 'python' in proc.info['name'].lower() 
+                and proc.info['pid'] != current_pid):
                 proc.kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             pass
 
 def signal_handler(sig, frame):
-    """Handle Ctrl+C and other termination signals."""
-    print("\n⚠️ Received shutdown signal. Cleaning up...")
+    """Handle shutdown signals."""
+    log("Received shutdown signal, cleaning up...")
     try:
-        # Create a task to run the shutdown
         loop = asyncio.get_event_loop()
         if loop.is_running():
             asyncio.create_task(bot.close())
-            # Give it a moment to clean up
             loop.run_until_complete(asyncio.sleep(1))
         else:
             asyncio.run(bot.close())
     except:
         pass
     finally:
-        print("✅ Signal handler complete.")
-        force_kill_python_processes()
+        cleanup_processes()
+        log("Shutdown complete")
         sys.exit(0)
 
-# Register the signal handler
+# Register signal handlers
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-# --- Run Bot ---
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
 if __name__ == "__main__":
     try:
+        # Load environment variables
         load_dotenv()
+        
+        # Update yt-dlp
+        YTDlpManager.update_yt_dlp()
+        
+        # Run bot
         bot.run(os.getenv("DISCORD_TOKEN"))
+        
     except KeyboardInterrupt:
-        print("\n⚠️ Keyboard interrupt received. Shutting down...")
+        log("Keyboard interrupt received")
         try:
             asyncio.run(bot.close())
         except:
             pass
     except Exception as e:
-        print(f"\n❌ Error running bot: {e}")
+        log(f"Error running bot: {e}", "ERROR")
     finally:
-        force_kill_python_processes()
-        print("✅ Bot process terminated.")
-        sys.exit(0)
-
-# Check and update yt-dlp version
-def update_yt_dlp():
-    """Update yt-dlp to the latest version."""
-    try:
-        print("🔧 Checking yt-dlp version...")
-        result = subprocess.run([sys.executable, "-m", "pip", "show", "yt-dlp"], 
-                              capture_output=True, text=True, timeout=30)
-        
-        if result.returncode == 0:
-            print("✅ yt-dlp is installed")
-            # Try to update to latest version
-            print("🔄 Updating yt-dlp to latest version...")
-            update_result = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], 
-                                         capture_output=True, text=True, timeout=120)
-            
-            if update_result.returncode == 0:
-                print("✅ yt-dlp updated successfully")
-            else:
-                print(f"⚠️ Failed to update yt-dlp: {update_result.stderr}")
-        else:
-            print("❌ yt-dlp not found, installing...")
-            install_result = subprocess.run([sys.executable, "-m", "pip", "install", "yt-dlp"], 
-                                          capture_output=True, text=True, timeout=120)
-            
-            if install_result.returncode == 0:
-                print("✅ yt-dlp installed successfully")
-            else:
-                print(f"❌ Failed to install yt-dlp: {install_result.stderr}")
-                
-    except Exception as e:
-        print(f"⚠️ Error updating yt-dlp: {e}")
-
-# Update yt-dlp on startup
-update_yt_dlp()
+        cleanup_processes()
+        log("Bot process terminated")
+        sys.exit(0) 
