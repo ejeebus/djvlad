@@ -1571,6 +1571,94 @@ async def search_and_play(ctx, query: str, msg_handler=None):
                 except Exception as fallback_error:
                     print(f"Fallback search also failed: {fallback_error}")
                     raise ValueError("Search failed due to YouTube bot detection")
+            elif "Failed to parse JSON" in str(e) or "JSONDecodeError" in str(e):
+                print("JSON parsing error detected, trying alternative search methods...")
+                # Try multiple alternative approaches
+                alternative_methods = [
+                    {
+                        'name': 'Simple Search',
+                        'options': {
+                            'quiet': True,
+                            'no_warnings': True,
+                            'extract_flat': True,
+                            'format': 'best',
+                            'http_headers': {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                'Accept-Language': 'en-US,en;q=0.5',
+                                'Accept-Encoding': 'gzip, deflate',
+                                'Connection': 'keep-alive',
+                            },
+                            'socket_timeout': 30,
+                            'retries': 5,
+                        }
+                    },
+                    {
+                        'name': 'Mobile Search',
+                        'options': {
+                            'quiet': True,
+                            'no_warnings': True,
+                            'extract_flat': True,
+                            'format': 'best',
+                            'http_headers': {
+                                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                'Accept-Language': 'en-US,en;q=0.5',
+                                'Accept-Encoding': 'gzip, deflate',
+                                'Connection': 'keep-alive',
+                            },
+                            'socket_timeout': 30,
+                            'retries': 5,
+                        }
+                    },
+                    {
+                        'name': 'Minimal Search',
+                        'options': {
+                            'quiet': True,
+                            'no_warnings': True,
+                            'extract_flat': True,
+                            'format': 'best',
+                            'http_headers': {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                'Accept-Language': 'en-US,en;q=0.5',
+                                'Accept-Encoding': 'gzip, deflate',
+                                'Connection': 'keep-alive',
+                            },
+                            'extractor_args': {
+                                'youtube': {
+                                    'player_client': ['web'],
+                                    'player_skip': ['js'],
+                                },
+                                'youtubetab': {
+                                    'skip': ['authcheck']
+                                }
+                            },
+                            'socket_timeout': 30,
+                            'retries': 5,
+                        }
+                    }
+                ]
+                
+                # Add cookies to all alternative methods
+                for method in alternative_methods:
+                    if temp_cookies_file:
+                        method['options']['cookiefile'] = temp_cookies_file
+                
+                # Try each alternative method
+                for i, method in enumerate(alternative_methods, 1):
+                    try:
+                        print(f"Trying alternative method {i}/3: {method['name']}")
+                        with yt_dlp.YoutubeDL(method['options']) as ydl_alt:
+                            info = await bot.loop.run_in_executor(None, lambda: ydl_alt.extract_info(search_url, download=False))
+                            print(f"Alternative method {method['name']} successful")
+                            break
+                    except Exception as alt_error:
+                        print(f"Alternative method {method['name']} failed: {alt_error}")
+                        if i == len(alternative_methods):
+                            print("All alternative methods failed")
+                            raise ValueError("Search failed - all methods exhausted. YouTube may be blocking requests.")
+                        continue
             else:
                 raise ValueError(f"Search error: {str(e)}")
         except yt_dlp.utils.ExtractorError as e:
@@ -1692,16 +1780,29 @@ async def search_and_play(ctx, query: str, msg_handler=None):
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
         
-        # Send error message
+        # Provide more user-friendly error messages
         error_msg = str(e)
+        if "Failed to parse JSON" in error_msg or "JSONDecodeError" in error_msg:
+            error_msg = "❌ YouTube search is temporarily unavailable. Please try again in a few minutes or try a different search term."
+        elif "bot detection" in error_msg.lower():
+            error_msg = "❌ YouTube is blocking automated requests. Please try again later."
+        elif "Video unavailable" in error_msg:
+            error_msg = "❌ The requested video is unavailable or private."
+        elif "No search results" in error_msg:
+            error_msg = "❌ No search results found. Please try a different search term."
+        elif "Search failed" in error_msg:
+            error_msg = "❌ Search failed. Please try again or use a different search term."
+        else:
+            error_msg = f"❌ Search error: {error_msg}"
+        
         if msg_handler:
-            await msg_handler.send(f"❌ {error_msg}")
+            await msg_handler.send(error_msg)
         else:
             # Fallback to direct message send if no msg_handler
             if hasattr(ctx, 'channel') and ctx.channel:
-                await ctx.channel.send(f"❌ {error_msg}")
+                await ctx.channel.send(error_msg)
             else:
-                await ctx.followup.send(f"❌ {error_msg}", ephemeral=True)
+                await ctx.followup.send(error_msg, ephemeral=True)
 
     finally:
         # Clean up temporary cookies file
