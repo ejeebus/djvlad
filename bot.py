@@ -1296,27 +1296,52 @@ class MessageHandler:
 @bot.tree.command(name="play", description="Play a song or playlist from YouTube")
 @app_commands.describe(query="A song name or URL (YouTube, Spotify, SoundCloud, etc.)")
 async def play_command(interaction: discord.Interaction, query: str):
-    # Create message handler
+    """Play a song from YouTube."""
+    print(f"\n=== Starting Play Command ===")
+    print(f"Query: {query}")
+    print(f"User: {interaction.user.display_name}")
+    print(f"Channel: {interaction.channel.name}")
+    
+    # Initialize message handler
     msg_handler = MessageHandler(interaction)
     await msg_handler.initialize()
     
     try:
-        print(f"\n=== Starting Play Command ===")
-        print(f"Query: {query}")
-        print(f"User: {interaction.user.display_name}")
-        print(f"Channel: {interaction.channel.name}")
+        # Check if query is a YouTube URL
+        is_youtube_url = any(domain in query.lower() for domain in ['youtube.com', 'youtu.be', 'www.youtube.com'])
         
-        # Get or create player for this guild
-        player = get_player(interaction.guild)
+        if is_youtube_url:
+            print(f"Detected YouTube URL, treating as direct video extraction")
+            # For direct URLs, we'll extract the video ID and process directly
+            await play_track(interaction, query, msg_handler)
+        else:
+            print(f"Treating as search query")
+            # For search queries, use the search functionality
+            await search_and_play(interaction, query, msg_handler)
+            
+    except Exception as e:
+        print(f"=== Play Command Error ===")
+        print(f"Error: {str(e)}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         
-        # Create temporary cookies file
-        temp_cookies_file = create_temp_cookies_file()
-        create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
+        # Send error message
+        error_msg = str(e)
+        await msg_handler.send(f"❌ Error processing your request: {error_msg}")
+        
+        print(f"=== Message Handler Debug Info ===")
+        print(msg_handler.get_debug_info())
 
-        # Add cookies file to yt-dlp options if available
-        if temp_cookies_file:
-            ydl_opts['cookiefile'] = temp_cookies_file
+async def search_and_play(ctx, query: str, msg_handler=None):
+    """Search for a song and play it."""
+    print(f"\n=== Starting search for: {query} ===")
+    
+    # Create temporary cookies file
+    temp_cookies_file = create_temp_cookies_file()
+    create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
 
+    try:
         # Create enhanced yt-dlp options for search
         enhanced_ydl_opts = ydl_opts.copy()
         enhanced_ydl_opts.update({
@@ -1361,7 +1386,6 @@ async def play_command(interaction: discord.Interaction, query: str):
             enhanced_ydl_opts['cookiefile'] = temp_cookies_file
 
         # Extract video information
-        print(f"\n=== Starting search for: {query} ===")
         search_url = f"ytsearch:{query}"
         try:
             with yt_dlp.YoutubeDL(enhanced_ydl_opts) as ydl:
@@ -1476,11 +1500,13 @@ async def play_command(interaction: discord.Interaction, query: str):
             print(f"Views: {best_entry.get('view_count', 0)}")
             
             # Only add to queue if not already playing
-            if not interaction.guild.voice_client or not interaction.guild.voice_client.is_playing():
+            guild = getattr(ctx, 'guild', None)
+            if not guild or not guild.voice_client or not guild.voice_client.is_playing():
                 print("No active playback, starting play_track")
-                await play_track(interaction, best_entry['webpage_url'], msg_handler)
+                await play_track(ctx, best_entry['webpage_url'], msg_handler)
             else:
                 print("Already playing, adding to queue")
+                player = get_player(guild)
                 player.queue.append(best_entry['webpage_url'])
                 await msg_handler.send(
                     f"🎵 Added **[{best_entry['title']}]({best_entry['webpage_url']})** to the queue.\n"
@@ -1494,50 +1520,38 @@ async def play_command(interaction: discord.Interaction, query: str):
             print(f"Views: {info.get('view_count', 0)}")
             
             # Only add to queue if not already playing
-            if not interaction.guild.voice_client or not interaction.guild.voice_client.is_playing():
+            guild = getattr(ctx, 'guild', None)
+            if not guild or not guild.voice_client or not guild.voice_client.is_playing():
                 print("No active playback, starting play_track")
-                await play_track(interaction, info['webpage_url'], msg_handler)
+                await play_track(ctx, info['webpage_url'], msg_handler)
             else:
                 print("Already playing, adding to queue")
+                player = get_player(guild)
                 player.queue.append(info['webpage_url'])
                 await msg_handler.send(
                     f"🎵 Added **[{info['title']}]({info['webpage_url']})** to the queue.\n"
                     f"👁️ {int(info.get('view_count', 0)):,} views • "
                     f"⏱️ {format_time(info.get('duration', 0))}"
                 )
-
+                
     except Exception as e:
-        print(f"\n=== Play Command Error ===")
+        print(f"\n=== Search Error ===")
         print(f"Error: {str(e)}")
         print(f"Error type: {type(e)}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
         
-        # Add debug info to error message if msg_handler is available
+        # Send error message
+        error_msg = str(e)
         if msg_handler:
-            debug_info = msg_handler.get_debug_info()
-            print("\n=== Message Handler Debug Info ===")
-            print(debug_info)
-        
-        # Ensure we have a non-empty error message
-        error_msg = str(e) if str(e).strip() else f"Unknown error occurred (type: {type(e).__name__})"
-        try:
-            if msg_handler:
-                await msg_handler.send(f"❌ Error processing your request: {error_msg}")
+            await msg_handler.send(f"❌ {error_msg}")
+        else:
+            # Fallback to direct message send if no msg_handler
+            if hasattr(ctx, 'channel') and ctx.channel:
+                await ctx.channel.send(f"❌ {error_msg}")
             else:
-                # Fallback to direct message send if no msg_handler
-                if isinstance(interaction, commands.Context):
-                    await interaction.channel.send(f"❌ Error processing your request: {error_msg}")
-                else:
-                    await interaction.followup.send(f"❌ Error processing your request: {error_msg}", ephemeral=True)
-        except Exception as send_error:
-            print(f"Failed to send error message: {send_error}")
-            print(f"Send error type: {type(send_error)}")
-            print(f"Send error traceback: {traceback.format_exc()}")
-            if msg_handler:
-                print("\n=== Final Message Handler State ===")
-                print(msg_handler.get_debug_info())
-
+                await ctx.followup.send(f"❌ {error_msg}", ephemeral=True)
+    
     finally:
         # Clean up temporary cookies file
         if temp_cookies_file:
