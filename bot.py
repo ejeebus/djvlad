@@ -853,52 +853,122 @@ async def play_track(ctx, url: str, msg_handler=None):
 
         # Extract video information
         print(f"\n=== Extracting video info for: {url} ===")
-        try:
-            with yt_dlp.YoutubeDL(enhanced_ydl_opts) as ydl:
-                print("Created enhanced yt-dlp instance for direct video extraction")
-                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-                print(f"Video info extracted successfully")
-        except yt_dlp.utils.DownloadError as e:
-            print(f"yt-dlp DownloadError: {str(e)}")
-            if "Video unavailable" in str(e):
-                raise ValueError("This video is unavailable or private")
-            elif "Sign in" in str(e):
-                print("YouTube bot detection triggered, trying alternative extraction method...")
-                # Try alternative extraction with different options
-                try:
-                    fallback_opts = enhanced_ydl_opts.copy()
-                    fallback_opts.update({
-                        'player_client': ['android'],  # Try android client
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                            'Accept-Language': 'en-US,en;q=0.5',
-                            'Accept-Encoding': 'gzip, deflate',
-                            'Connection': 'keep-alive',
-                            'Upgrade-Insecure-Requests': '1',
+        
+        # Try multiple extraction strategies
+        extraction_strategies = [
+            {
+                'name': 'Enhanced Web Client',
+                'options': enhanced_ydl_opts.copy()
+            },
+            {
+                'name': 'Android Client',
+                'options': enhanced_ydl_opts.copy()
+            },
+            {
+                'name': 'Minimal Headers',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'socket_timeout': 30,
+                    'retries': 10,
+                }
+            },
+            {
+                'name': 'Mobile Client',
+                'options': {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                    },
+                    'socket_timeout': 30,
+                    'retries': 10,
+                }
+            }
+        ]
+        
+        # Add cookies to all strategies
+        for strategy in extraction_strategies:
+            if temp_cookies_file:
+                strategy['options']['cookiefile'] = temp_cookies_file
+        
+        # Try each strategy
+        info = None
+        last_error = None
+        
+        for i, strategy in enumerate(extraction_strategies):
+            try:
+                print(f"Trying strategy {i+1}/{len(extraction_strategies)}: {strategy['name']}")
+                
+                # Configure strategy-specific options
+                if strategy['name'] == 'Android Client':
+                    strategy['options']['extractor_args'] = {
+                        'youtube': {
+                            'player_client': ['android'],
+                            'player_skip': ['js'],
                         }
-                    })
+                    }
+                elif strategy['name'] == 'Minimal Headers':
+                    # Add cookies if available
+                    if temp_cookies_file:
+                        strategy['options']['cookiefile'] = temp_cookies_file
+                elif strategy['name'] == 'Mobile Client':
+                    strategy['options']['extractor_args'] = {
+                        'youtube': {
+                            'player_client': ['android'],
+                            'player_skip': ['js', 'configs'],
+                        }
+                    }
+                    if temp_cookies_file:
+                        strategy['options']['cookiefile'] = temp_cookies_file
+                
+                with yt_dlp.YoutubeDL(strategy['options']) as ydl:
+                    print(f"Created yt-dlp instance for {strategy['name']}")
+                    info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+                    print(f"✓ {strategy['name']} extraction successful")
+                    break  # Success! Exit the loop
                     
-                    with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
-                        print("Trying fallback extraction with android client...")
-                        info = await bot.loop.run_in_executor(None, lambda: ydl2.extract_info(url, download=False))
-                        print("Fallback extraction successful")
-                except Exception as fallback_error:
-                    print(f"Fallback extraction also failed: {fallback_error}")
-                    raise ValueError("This video requires authentication and cannot be accessed")
-            elif "Age restricted" in str(e):
-                raise ValueError("This video is age-restricted and requires cookies")
+            except yt_dlp.utils.DownloadError as e:
+                last_error = e
+                print(f"✗ {strategy['name']} failed: {str(e)}")
+                if "Sign in" in str(e):
+                    print(f"Bot detection triggered for {strategy['name']}, trying next strategy...")
+                    continue
+                elif "Video unavailable" in str(e):
+                    raise ValueError("This video is unavailable or private")
+                else:
+                    print(f"Other error for {strategy['name']}: {str(e)}")
+                    continue
+            except Exception as e:
+                last_error = e
+                print(f"✗ {strategy['name']} failed with exception: {str(e)}")
+                continue
+        
+        # If all strategies failed
+        if info is None:
+            print("All extraction strategies failed")
+            if last_error:
+                if "Sign in" in str(last_error):
+                    raise ValueError("YouTube bot detection blocked all extraction methods. The video may require authentication or the server IP may be flagged.")
+                else:
+                    raise ValueError(f"Failed to extract video info: {str(last_error)}")
             else:
-                raise ValueError(f"Download error: {str(e)}")
-        except yt_dlp.utils.ExtractorError as e:
-            print(f"yt-dlp ExtractorError: {str(e)}")
-            raise ValueError(f"Could not extract video information: {str(e)}")
-        except Exception as e:
-            print(f"Error during yt-dlp extraction: {str(e)}")
-            print(f"Error type: {type(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            raise ValueError(f"Error extracting video info: {str(e)}")
+                raise ValueError("Failed to extract video info with all strategies")
+        
+        print(f"Video info extracted successfully with {strategy['name']}")
 
         # Validate the info dictionary
         if not info:
