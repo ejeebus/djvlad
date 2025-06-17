@@ -830,6 +830,18 @@ async def play_track(ctx, url: str, msg_handler=None):
             print(f"Guild ID: {guild.id}")
             print(f"Bot permissions in channel: {channel.permissions_for(guild.me)}")
             
+            # Check if bot's Discord session is still valid
+            if not bot.is_ready():
+                error_msg = "❌ Bot is not ready. Please try again."
+                print("Bot is not ready, cannot connect to voice")
+                if msg_handler:
+                    await msg_handler.send(error_msg)
+                elif hasattr(ctx, 'channel') and ctx.channel:
+                    await ctx.channel.send(error_msg)
+                else:
+                    await ctx.followup.send(error_msg, ephemeral=True)
+                return
+            
             # Check if bot has necessary permissions
             required_permissions = [
                 'connect',
@@ -866,6 +878,9 @@ async def play_track(ctx, url: str, msg_handler=None):
                 print(f"Bot user: {guild.me}")
                 print(f"Bot status: {guild.me.status}")
                 
+                # Add a small delay before connecting to avoid rate limiting
+                await asyncio.sleep(1.0)
+                
                 # Simple connection approach - no complex retry logic
                 voice_client = await channel.connect(
                     timeout=30.0,
@@ -873,6 +888,22 @@ async def play_track(ctx, url: str, msg_handler=None):
                     self_mute=False
                 )
                 print("Successfully connected to voice channel")
+                
+            except discord.errors.ConnectionClosed as e:
+                print(f"Discord connection closed: {e}")
+                if e.code == 4006:
+                    error_msg = "❌ Discord session error (4006). The bot may need to be restarted."
+                    print("🔍 WebSocket Code 4006: Session is no longer valid")
+                else:
+                    error_msg = f"❌ Discord connection error: {e}"
+                
+                if msg_handler:
+                    await msg_handler.send(error_msg)
+                elif hasattr(ctx, 'channel') and ctx.channel:
+                    await ctx.channel.send(error_msg)
+                else:
+                    await ctx.followup.send(error_msg, ephemeral=True)
+                return
                 
             except Exception as e:
                 print(f"Failed to connect to voice channel: {e}")
