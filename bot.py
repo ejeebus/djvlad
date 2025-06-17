@@ -250,6 +250,7 @@ class GuildPlayer:
         self.is_paused = False
         self.last_position = 0  # Track the last known position
         self.position_update_time = None  # Track when we last updated the position
+        self.voice_client = None  # Add this line
 
     def get_elapsed_time(self) -> float:
         """Calculate the actual elapsed time, accounting for pauses and voice client position."""
@@ -820,6 +821,7 @@ async def play_track(ctx, url: str, msg_handler=None):
             'quiet': True,  # Reduce logging to avoid detection
             'no_warnings': True,  # Suppress warnings
             'extract_flat': False,  # We want full extraction for direct videos
+            'format': 'bestaudio/best',  # Let yt-dlp choose the best audio format
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -833,10 +835,11 @@ async def play_track(ctx, url: str, msg_handler=None):
                 'Sec-Fetch-Site': 'none',
                 'Sec-Fetch-User': '?1',
                 'Cache-Control': 'max-age=0',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com',
             },
             'extractor_args': {
                 'youtube': {
-                    'skip': ['dash', 'hls'],
                     'player_client': ['web'],  # Try web client first
                     'player_skip': ['js', 'configs'],
                     'player_params': {
@@ -870,6 +873,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
+                    'format': 'bestaudio/best',
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -887,6 +891,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
+                    'format': 'bestaudio/best',
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -904,6 +909,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': False,
+                    'format': 'bestaudio/best',
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -998,6 +1004,9 @@ async def play_track(ctx, url: str, msg_handler=None):
                     continue
                 elif "Video unavailable" in str(e):
                     raise ValueError("This video is unavailable or private")
+                elif "Requested format is not available" in str(e):
+                    print(f"Format issue for {strategy['name']}, trying next strategy...")
+                    continue
                 else:
                     print(f"Other error for {strategy['name']}: {str(e)}")
                     continue
@@ -1012,12 +1021,24 @@ async def play_track(ctx, url: str, msg_handler=None):
             if last_error:
                 if "Sign in" in str(last_error):
                     raise ValueError("YouTube bot detection blocked all extraction methods. The video may require authentication or the server IP may be flagged.")
+                elif "Requested format is not available" in str(last_error):
+                    raise ValueError("Could not find suitable audio format for this video. The video may be restricted or unavailable.")
                 else:
                     raise ValueError(f"Failed to extract video info: {str(last_error)}")
             else:
                 raise ValueError("Failed to extract video info with all strategies")
         
         print(f"Video info extracted successfully with {strategy['name']}")
+        
+        # Ensure voice client is still connected
+        if voice_client and not voice_client.is_connected():
+            print("Voice client disconnected during extraction, attempting to reconnect...")
+            try:
+                voice_client = await voice_client.connect(timeout=20.0, self_deaf=True)
+                print("Successfully reconnected to voice channel")
+            except Exception as e:
+                print(f"Failed to reconnect to voice channel: {e}")
+                raise ValueError(f"Voice connection lost and could not reconnect: {str(e)}")
 
         # Validate the info dictionary
         if not info:
