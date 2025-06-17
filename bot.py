@@ -1145,7 +1145,7 @@ async def play_track(ctx, url: str, msg_handler=None):
             embed = await create_player_embed(info, author, player)
             view = MusicControls()
             if hasattr(ctx, 'channel') and ctx.channel:
-            player.player_message = await ctx.channel.send(embed=embed, view=view)
+                player.player_message = await ctx.channel.send(embed=embed, view=view)
             else:
                 # For interactions, we need to use followup
                 player.player_message = await ctx.followup.send(embed=embed, view=view)
@@ -1449,13 +1449,13 @@ class MessageHandler:
 async def play_command(interaction: discord.Interaction, query: str):
     """Play a song from YouTube."""
     print(f"\n=== Starting Play Command ===")
-        print(f"Query: {query}")
+    print(f"Query: {query}")
     print(f"User: {interaction.user.display_name}")
     print(f"Channel: {interaction.channel.name}")
         
-        # Initialize message handler
+    # Initialize message handler
     msg_handler = MessageHandler(interaction)
-        await msg_handler.initialize()
+    await msg_handler.initialize()
         
     try:
         # Check if query is a YouTube URL
@@ -1488,9 +1488,9 @@ async def search_and_play(ctx, query: str, msg_handler=None):
     """Search for a song and play it."""
     print(f"\n=== Starting search for: {query} ===")
 
-        # Create temporary cookies file
-        temp_cookies_file = create_temp_cookies_file()
-        create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
+    # Create temporary cookies file
+    temp_cookies_file = create_temp_cookies_file()
+    create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
 
     try:
         # Create enhanced yt-dlp options for search
@@ -1576,64 +1576,64 @@ async def search_and_play(ctx, query: str, msg_handler=None):
         except yt_dlp.utils.ExtractorError as e:
             print(f"yt-dlp ExtractorError during search: {str(e)}")
             raise ValueError(f"Could not perform search: {str(e)}")
-                    except Exception as e:
+        except Exception as e:
             print(f"Error during yt-dlp search: {str(e)}")
-                        print(f"Error type: {type(e)}")
-                        import traceback
-                        print(f"Traceback: {traceback.format_exc()}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             raise ValueError(f"Error during search: {str(e)}")
                     
         # Process search results
         print(f"Raw search results type: {type(info)}")
         print(f"Raw search results keys: {info.keys() if isinstance(info, dict) else 'Not a dict'}")
         
-                    if not info:
-                        print("No info returned from yt-dlp")
-                        raise ValueError("No video information found")
-                    
-                    # For search results, validate entries
-                    if 'entries' in info:
-                        print(f"Found {len(info['entries'])} entries in search results")
-                        if not info['entries']:
-                            print("Empty entries list")
-                            raise ValueError("No search results found")
-                        
-                        # Filter and validate entries with detailed debug info
-                        valid_entries = []
-                        for i, entry in enumerate(info['entries']):
-                            print(f"\nProcessing entry {i + 1}:")
-                            print(f"Entry type: {type(entry)}")
-                            print(f"Entry keys: {entry.keys() if isinstance(entry, dict) else 'Not a dict'}")
-                            print(f"Title: {entry.get('title', 'NO TITLE')}")
-                            print(f"Views: {entry.get('view_count', 'NO VIEWS')}")
-                            print(f"Duration: {entry.get('duration', 'NO DURATION')}")
-                            print(f"URL: {entry.get('url', 'NO URL')}")
-                            
-                            if entry and isinstance(entry, dict):
-                                # For search results, use 'url' instead of 'webpage_url'
-                                if 'url' in entry and 'title' in entry:
-                                    # Add webpage_url field for consistency
-                                    entry['webpage_url'] = entry['url']
-                                    valid_entries.append(entry)
-                                    print("✓ Entry is valid")
-                                else:
-                                    print("✗ Entry filtered out - missing required fields")
-                                    print(f"Missing fields: {[k for k in ['url', 'title'] if k not in entry]}")
-                            else:
-                                print(f"✗ Entry filtered out - invalid type: {type(entry)}")
-                        
-                        print(f"\nFound {len(valid_entries)} valid entries after filtering")
-                        if not valid_entries:
-                            print("No valid entries found after filtering")
-                            raise ValueError("No valid search results found")
-                        info['entries'] = valid_entries
-                    # For single videos, validate required fields
-                    elif not all(key in info for key in ['url', 'title']):
-                        print(f"Single video missing required fields: {info}")
-                        raise ValueError("Incomplete video information")
-                    else:
+        if not info:
+            print("No info returned from yt-dlp")
+            raise ValueError("No video information found")
+        
+        # For search results, validate entries
+        if 'entries' in info:
+            print(f"Found {len(info['entries'])} entries in search results")
+            if not info['entries']:
+                print("Empty entries list")
+                raise ValueError("No search results found")
+            
+            # Filter and validate entries with detailed debug info
+            valid_entries = []
+            for i, entry in enumerate(info['entries']):
+                print(f"\nProcessing entry {i + 1}:")
+                print(f"Entry type: {type(entry)}")
+                print(f"Entry keys: {entry.keys() if isinstance(entry, dict) else 'Not a dict'}")
+                print(f"Title: {entry.get('title', 'NO TITLE')}")
+                print(f"Views: {entry.get('view_count', 'NO VIEWS')}")
+                print(f"Duration: {entry.get('duration', 'NO DURATION')}")
+                print(f"URL: {entry.get('url', 'NO URL')}")
+                
+                if entry and isinstance(entry, dict):
+                    # For search results, use 'url' instead of 'webpage_url'
+                    if 'url' in entry and 'title' in entry:
                         # Add webpage_url field for consistency
-                        info['webpage_url'] = info['url']
+                        entry['webpage_url'] = entry['url']
+                        valid_entries.append(entry)
+                        print("✓ Entry is valid")
+                    else:
+                        print("✗ Entry filtered out - missing required fields")
+                        print(f"Missing fields: {[k for k in ['url', 'title'] if k not in entry]}")
+                else:
+                    print(f"✗ Entry filtered out - invalid type: {type(entry)}")
+            
+            print(f"\nFound {len(valid_entries)} valid entries after filtering")
+            if not valid_entries:
+                print("No valid entries found after filtering")
+                raise ValueError("No valid search results found")
+            info['entries'] = valid_entries
+        # For single videos, validate required fields
+        elif not all(key in info for key in ['url', 'title']):
+            print(f"Single video missing required fields: {info}")
+            raise ValueError("Incomplete video information")
+        else:
+            # Add webpage_url field for consistency
+            info['webpage_url'] = info['url']
 
         print("\n=== Processing search results ===")
         if 'entries' in info:
@@ -1696,11 +1696,11 @@ async def search_and_play(ctx, query: str, msg_handler=None):
         error_msg = str(e)
         if msg_handler:
             await msg_handler.send(f"❌ {error_msg}")
-            else:
-                # Fallback to direct message send if no msg_handler
+        else:
+            # Fallback to direct message send if no msg_handler
             if hasattr(ctx, 'channel') and ctx.channel:
                 await ctx.channel.send(f"❌ {error_msg}")
-                else:
+            else:
                 await ctx.followup.send(f"❌ {error_msg}", ephemeral=True)
 
     finally:
