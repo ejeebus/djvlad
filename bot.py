@@ -151,11 +151,30 @@ ydl_opts = {
     'restrictfilenames': True,  # Restrict filenames
     'noplaylist': True,  # Don't extract playlists
     'age_limit': 21,  # Age limit
+    'socket_timeout': 30,  # Increase socket timeout
+    'retries': 10,  # Increase retry attempts
+    'fragment_retries': 10,  # Increase fragment retry attempts
+    'extractor_retries': 10,  # Increase extractor retry attempts
     'http_headers': {  # Add headers to look more like a browser
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-us,en;q=0.5',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
+    },
+    'extractor_args': {
+        'youtube': {
+            'skip': ['dash', 'hls'],  # Skip formats that might trigger bot detection
+            'player_client': ['android', 'web'],  # Try different player clients
+            'player_skip': ['js', 'configs', 'webpage'],  # Skip unnecessary player components
+        }
     },
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
@@ -651,40 +670,27 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
                 return
             channel = ctx.author.voice.channel
             print(f"Connecting to voice channel: {channel.name}")
-            voice_client = await channel.connect()
+            
+            # Try to connect with better error handling
+            try:
+                voice_client = await channel.connect(timeout=20.0)
+                print("Successfully connected to voice channel")
+            except Exception as e:
+                print(f"Failed to connect to voice channel: {e}")
+                error_msg = f"❌ Failed to connect to voice channel: {str(e)}"
+                if msg_handler:
+                    await msg_handler.send(error_msg)
+                elif isinstance(ctx, commands.Context):
+                    await ctx.channel.send(error_msg)
+                else:
+                    await ctx.followup.send(error_msg, ephemeral=True)
+                return
 
         # Create temporary cookies file
         temp_cookies_file = create_temp_cookies_file()
         create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
 
-        # Enhanced yt-dlp options for better extraction
-        ydl_opts = {
-            'format': 'bestaudio/best',  # Prefer best audio quality
-            'quiet': False,  # Enable logging
-            'nocheckcertificate': True,  # Skip SSL certificate validation
-            'ignoreerrors': False,  # Don't ignore errors
-            'no_warnings': False,  # Show warnings
-            'extractaudio': True,  # Extract audio
-            'audioformat': 'mp3',  # Convert to mp3
-            'audioquality': '192K',  # Audio quality
-            'outtmpl': '%(title)s.%(ext)s',  # Output template
-            'restrictfilenames': True,  # Restrict filenames
-            'noplaylist': True,  # Don't extract playlists
-            'age_limit': 21,  # Age limit
-            'http_headers': {  # Add headers to look more like a browser
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            },
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        }
-        
-        # Add cookies file if available
+        # Add cookies file to yt-dlp options if available
         if temp_cookies_file:
             ydl_opts['cookiefile'] = temp_cookies_file
 
@@ -735,7 +741,7 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
         print(f"Uploader: {info.get('uploader', 'Not found')}")
         print(f"View count: {info.get('view_count', 'Not found')}")
         print(f"Like count: {info.get('like_count', 'Not found')}")
-
+        
         # Get the audio stream URL
         if 'url' not in info:
             print("No direct URL found, extracting format...")
@@ -831,12 +837,16 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
         try:
             if msg_handler:
                 await msg_handler.send(f"❌ Error playing track: {error_msg}")
-            elif isinstance(ctx, commands.Context):
-                await ctx.channel.send(f"❌ Error playing track: {error_msg}")
             else:
-                await ctx.followup.send(f"❌ Error playing track: {error_msg}", ephemeral=True)
+                # Fallback to direct message send if no msg_handler
+                if isinstance(ctx, commands.Context):
+                    await ctx.channel.send(f"❌ Error playing track: {error_msg}")
+                else:
+                    await ctx.followup.send(f"❌ Error playing track: {error_msg}", ephemeral=True)
         except Exception as send_error:
             print(f"Failed to send error message: {send_error}")
+            print(f"Send error type: {type(send_error)}")
+            print(f"Send error traceback: {traceback.format_exc()}")
 
     finally:
         # Clean up temporary cookies file
@@ -1095,62 +1105,28 @@ class MessageHandler:
 async def play_command(interaction: discord.Interaction, query: str):
     # Create message handler
     msg_handler = MessageHandler(interaction)
+    await msg_handler.initialize()
     
     try:
-        print("\n=== Starting Play Command ===")
+        print(f"\n=== Starting Play Command ===")
         print(f"Query: {query}")
-        print(f"User: {interaction.user}")
-        print(f"Channel: {interaction.channel}")
+        print(f"User: {interaction.user.display_name}")
+        print(f"Channel: {interaction.channel.name}")
         
-        # Initialize message handler
-        await msg_handler.initialize()
-        
-        if not interaction.user.voice:
-            await msg_handler.send("❗ You must be in a voice channel first!")
-            return
-
+        # Get or create player for this guild
         player = get_player(interaction.guild)
-        ctx = await commands.Context.from_interaction(interaction)
-        print(f"Got player for guild {interaction.guild.id}")
-
+        
         # Create temporary cookies file
         temp_cookies_file = create_temp_cookies_file()
         create_temp_cookies_file.last_file = temp_cookies_file  # Store for cleanup
 
-        # Enhanced yt-dlp options for better search results
-        ydl_opts = {
-            'format': 'bestaudio/best',  # Prefer best audio quality
-            'quiet': False,  # Enable logging
-            'extract_flat': 'in_playlist',
-            'default_search': 'ytsearch',
-            'noplaylist': True,  # Don't extract playlists when searching
-            'nocheckcertificate': True,  # Skip SSL certificate validation
-            'ignoreerrors': False,  # Don't ignore errors
-            'no_warnings': False,  # Show warnings
-            'extractaudio': True,  # Extract audio
-            'audioformat': 'mp3',  # Convert to mp3
-            'audioquality': '192K',  # Audio quality
-            'outtmpl': '%(title)s.%(ext)s',  # Output template
-            'restrictfilenames': True,  # Restrict filenames
-            'noplaylist': True,  # Don't extract playlists
-            'age_limit': 21,  # Age limit
-            'http_headers': {  # Add headers to look more like a browser
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            },
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        }
-        
-        # Add cookies file if available
+        # Add cookies file to yt-dlp options if available
         if temp_cookies_file:
             ydl_opts['cookiefile'] = temp_cookies_file
 
+        # Extract video information
+        print(f"\n=== Extracting video info for: {query} ===")
+        
         async def try_extract_info(query: str, is_search: bool = False) -> dict:
             """Helper function to try extracting video info with better error handling."""
             try:
@@ -1161,85 +1137,68 @@ async def play_command(interaction: discord.Interaction, query: str):
                         info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
                         print(f"Raw search results type: {type(info)}")
                         print(f"Raw search results keys: {info.keys() if isinstance(info, dict) else 'Not a dict'}")
-                    except yt_dlp.utils.DownloadError as e:
-                        print(f"yt-dlp DownloadError: {str(e)}")
-                        if "Video unavailable" in str(e):
-                            raise ValueError("This video is unavailable or private")
-                        elif "Sign in" in str(e):
-                            raise ValueError("This video requires authentication")
-                        elif "Age restricted" in str(e):
-                            raise ValueError("This video is age-restricted and requires cookies")
+                        
+                        if not info:
+                            print("No info returned from yt-dlp")
+                            raise ValueError("No video information found")
+
+                        # For search results, validate entries
+                        if 'entries' in info:
+                            print(f"Found {len(info['entries'])} entries in search results")
+                            if not info['entries']:
+                                print("Empty entries list")
+                                raise ValueError("No search results found")
+                            
+                            # Filter and validate entries with detailed debug info
+                            valid_entries = []
+                            for i, entry in enumerate(info['entries']):
+                                print(f"\nProcessing entry {i + 1}:")
+                                print(f"Entry type: {type(entry)}")
+                                print(f"Entry keys: {entry.keys() if isinstance(entry, dict) else 'Not a dict'}")
+                                print(f"Title: {entry.get('title', 'NO TITLE')}")
+                                print(f"Views: {entry.get('view_count', 'NO VIEWS')}")
+                                print(f"Duration: {entry.get('duration', 'NO DURATION')}")
+                                print(f"URL: {entry.get('url', 'NO URL')}")
+                                
+                                if entry and isinstance(entry, dict):
+                                    # For search results, use 'url' instead of 'webpage_url'
+                                    if 'url' in entry and 'title' in entry:
+                                        # Add webpage_url field for consistency
+                                        entry['webpage_url'] = entry['url']
+                                        valid_entries.append(entry)
+                                        print("✓ Entry is valid")
+                                    else:
+                                        print("✗ Entry filtered out - missing required fields")
+                                        print(f"Missing fields: {[k for k in ['url', 'title'] if k not in entry]}")
+                                else:
+                                    print(f"✗ Entry filtered out - invalid type: {type(entry)}")
+                            
+                            print(f"\nFound {len(valid_entries)} valid entries after filtering")
+                            if not valid_entries:
+                                print("No valid entries found after filtering")
+                                raise ValueError("No valid search results found")
+                            info['entries'] = valid_entries
+                        # For single videos, validate required fields
+                        elif not all(key in info for key in ['url', 'title']):
+                            print(f"Single video missing required fields: {info}")
+                            raise ValueError("Incomplete video information")
                         else:
-                            raise ValueError(f"Download error: {str(e)}")
-                    except yt_dlp.utils.ExtractorError as e:
-                        print(f"yt-dlp ExtractorError: {str(e)}")
-                        raise ValueError(f"Could not extract video information: {str(e)}")
+                            # Add webpage_url field for consistency
+                            info['webpage_url'] = info['url']
+                        
+                        return info
+                    except ValueError:
+                        # Re-raise ValueError as-is (these are our custom error messages)
+                        raise
                     except Exception as e:
-                        print(f"Error during yt-dlp extraction: {str(e)}")
+                        print(f"Error in try_extract_info: {str(e)}")
                         print(f"Error type: {type(e)}")
                         import traceback
                         print(f"Traceback: {traceback.format_exc()}")
                         raise ValueError(f"Error extracting video info: {str(e)}")
-                    
-                    # Validate the info dictionary
-                    if not info:
-                        print("No info returned from yt-dlp")
-                        raise ValueError("No video information found")
-                    
-                    # For search results, validate entries
-                    if 'entries' in info:
-                        print(f"Found {len(info['entries'])} entries in search results")
-                        if not info['entries']:
-                            print("Empty entries list")
-                            raise ValueError("No search results found")
-                        
-                        # Filter and validate entries with detailed debug info
-                        valid_entries = []
-                        for i, entry in enumerate(info['entries']):
-                            print(f"\nProcessing entry {i + 1}:")
-                            print(f"Entry type: {type(entry)}")
-                            print(f"Entry keys: {entry.keys() if isinstance(entry, dict) else 'Not a dict'}")
-                            print(f"Title: {entry.get('title', 'NO TITLE')}")
-                            print(f"Views: {entry.get('view_count', 'NO VIEWS')}")
-                            print(f"Duration: {entry.get('duration', 'NO DURATION')}")
-                            print(f"URL: {entry.get('url', 'NO URL')}")
-                            
-                            if entry and isinstance(entry, dict):
-                                # For search results, use 'url' instead of 'webpage_url'
-                                if 'url' in entry and 'title' in entry:
-                                    # Add webpage_url field for consistency
-                                    entry['webpage_url'] = entry['url']
-                                    valid_entries.append(entry)
-                                    print("✓ Entry is valid")
-                                else:
-                                    print("✗ Entry filtered out - missing required fields")
-                                    print(f"Missing fields: {[k for k in ['url', 'title'] if k not in entry]}")
-                            else:
-                                print(f"✗ Entry filtered out - invalid type: {type(entry)}")
-                        
-                        print(f"\nFound {len(valid_entries)} valid entries after filtering")
-                        if not valid_entries:
-                            print("No valid entries found after filtering")
-                            raise ValueError("No valid search results found")
-                        info['entries'] = valid_entries
-                    # For single videos, validate required fields
-                    elif not all(key in info for key in ['url', 'title']):
-                        print(f"Single video missing required fields: {info}")
-                        raise ValueError("Incomplete video information")
-                    else:
-                        # Add webpage_url field for consistency
-                        info['webpage_url'] = info['url']
-                    
-                    return info
-            except ValueError:
-                # Re-raise ValueError as-is (these are our custom error messages)
-                raise
             except Exception as e:
                 print(f"Error in try_extract_info: {str(e)}")
-                print(f"Error type: {type(e)}")
-                import traceback
-                print(f"Traceback: {traceback.format_exc()}")
-                raise ValueError(f"Error extracting video info: {str(e)}")
+                raise
 
         # Try different search strategies with debug logging
         info = None
@@ -1284,7 +1243,7 @@ async def play_command(interaction: discord.Interaction, query: str):
             # Only add to queue if not already playing
             if not interaction.guild.voice_client or not interaction.guild.voice_client.is_playing():
                 print("No active playback, starting play_track")
-                await play_track(ctx, best_entry['webpage_url'], msg_handler)
+                await play_track(interaction, best_entry['webpage_url'], msg_handler)
             else:
                 print("Already playing, adding to queue")
                 player.queue.append(best_entry['webpage_url'])
@@ -1302,7 +1261,7 @@ async def play_command(interaction: discord.Interaction, query: str):
             # Only add to queue if not already playing
             if not interaction.guild.voice_client or not interaction.guild.voice_client.is_playing():
                 print("No active playback, starting play_track")
-                await play_track(ctx, info['webpage_url'], msg_handler)
+                await play_track(interaction, info['webpage_url'], msg_handler)
             else:
                 print("Already playing, adding to queue")
                 player.queue.append(info['webpage_url'])
@@ -1332,10 +1291,10 @@ async def play_command(interaction: discord.Interaction, query: str):
                 await msg_handler.send(f"❌ Error processing your request: {error_msg}")
             else:
                 # Fallback to direct message send if no msg_handler
-                if isinstance(ctx, commands.Context):
-                    await ctx.channel.send(f"❌ Error processing your request: {error_msg}")
+                if isinstance(interaction, commands.Context):
+                    await interaction.channel.send(f"❌ Error processing your request: {error_msg}")
                 else:
-                    await ctx.followup.send(f"❌ Error processing your request: {error_msg}", ephemeral=True)
+                    await interaction.followup.send(f"❌ Error processing your request: {error_msg}", ephemeral=True)
         except Exception as send_error:
             print(f"Failed to send error message: {send_error}")
             print(f"Send error type: {type(send_error)}")
