@@ -694,8 +694,7 @@ async def play_track(ctx, url: str, msg_handler=None):
             # Check if bot has necessary permissions
             required_permissions = [
                 'connect',
-                'speak',
-                'use_voice_activity'
+                'speak'
             ]
             missing_permissions = []
             bot_permissions = channel.permissions_for(guild.me)
