@@ -392,14 +392,15 @@ class GuildPlayer:
     
     def __init__(self, guild: discord.Guild):
         self.guild = guild
-        self.queue: List[str] = []
-        self.current_track: Optional[str] = None
+        self.queue: List[Dict[str, Any]] = []  # Store full track info, not just URLs
+        self.current_track: Optional[Dict[str, Any]] = None
         self.start_time: Optional[datetime] = None
         self.is_playing = False
         self.is_paused = False
         self.loop = False
         self.player_message: Optional[discord.Message] = None
         self.progress_task: Optional[asyncio.Task] = None
+        self.voice_client: Optional[discord.VoiceClient] = None
     
     def get_elapsed_time(self) -> float:
         """Get elapsed time of current track."""
@@ -417,11 +418,15 @@ class GuildPlayer:
     def pause(self) -> None:
         """Pause playback."""
         self.is_paused = True
+        if self.voice_client and self.voice_client.is_playing():
+            self.voice_client.pause()
         log("Playback paused")
     
     def resume(self) -> None:
         """Resume playback."""
         self.is_paused = False
+        if self.voice_client and self.voice_client.is_paused():
+            self.voice_client.resume()
         log("Playback resumed")
     
     def stop(self) -> None:
@@ -430,24 +435,50 @@ class GuildPlayer:
         self.is_paused = False
         self.current_track = None
         self.start_time = None
+        if self.voice_client:
+            self.voice_client.stop()
+        if self.progress_task and not self.progress_task.done():
+            self.progress_task.cancel()
         log("Playback stopped")
     
-    def add_to_queue(self, url: str) -> None:
+    def skip(self) -> None:
+        """Skip current track."""
+        if self.voice_client:
+            self.voice_client.stop()
+        log("Track skipped")
+    
+    def add_to_queue(self, track_info: Dict[str, Any]) -> None:
         """Add track to queue."""
         if len(self.queue) < Config.MAX_QUEUE_SIZE:
-            self.queue.append(url)
-            log(f"Added track to queue: {url}")
+            self.queue.append(track_info)
+            log(f"Added track to queue: {track_info.get('title', 'Unknown')}")
         else:
             log("Queue is full", "WARNING")
     
-    def get_next_track(self) -> Optional[str]:
+    def get_next_track(self) -> Optional[Dict[str, Any]]:
         """Get next track from queue."""
         if self.queue:
             track = self.queue.pop(0)
             self.current_track = track
-            log(f"Next track: {track}")
+            log(f"Next track: {track.get('title', 'Unknown')}")
             return track
         return None
+    
+    def get_queue_display(self) -> str:
+        """Get formatted queue display."""
+        if not self.queue:
+            return "No tracks in queue"
+        
+        queue_text = []
+        for i, track in enumerate(self.queue[:10], 1):  # Show first 10 tracks
+            title = track.get('title', 'Unknown Title')
+            duration = format_time(track.get('duration', 0))
+            queue_text.append(f"{i}. **{title}** ({duration})")
+        
+        if len(self.queue) > 10:
+            queue_text.append(f"... and {len(self.queue) - 10} more tracks")
+        
+        return "\n".join(queue_text)
 
 # Global player storage
 players: Dict[int, GuildPlayer] = {}
@@ -643,23 +674,84 @@ class MusicControls(discord.ui.View):
     
     @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.blurple, custom_id="music_prev")
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Previous track button."""
+        guild = interaction.guild
+        if not guild:
+            await self.handle_interaction(interaction, "❌ No guild found!")
+            return
+        
+        player = get_player(guild)
+        if not player.current_track:
+            await self.handle_interaction(interaction, "❌ No track currently playing!")
+            return
+        
         await self.handle_interaction(interaction, "⏮️ Previous track functionality coming soon!")
     
     @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.blurple, custom_id="music_playpause")
     async def play_pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_interaction(interaction, "⏯️ Play/Pause functionality coming soon!")
+        """Play/Pause button."""
+        guild = interaction.guild
+        if not guild:
+            await self.handle_interaction(interaction, "❌ No guild found!")
+            return
+        
+        player = get_player(guild)
+        if not player.current_track:
+            await self.handle_interaction(interaction, "❌ No track currently playing!")
+            return
+        
+        if player.is_paused:
+            player.resume()
+            await self.handle_interaction(interaction, "▶️ Playback resumed!")
+        else:
+            player.pause()
+            await self.handle_interaction(interaction, "⏸️ Playback paused!")
     
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.blurple, custom_id="music_skip")
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_interaction(interaction, "⏭️ Skip functionality coming soon!")
+        """Skip button."""
+        guild = interaction.guild
+        if not guild:
+            await self.handle_interaction(interaction, "❌ No guild found!")
+            return
+        
+        player = get_player(guild)
+        if not player.current_track:
+            await self.handle_interaction(interaction, "❌ No track currently playing!")
+            return
+        
+        player.skip()
+        await self.handle_interaction(interaction, "⏭️ Track skipped!")
     
     @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.blurple, custom_id="music_loop")
     async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_interaction(interaction, "🔁 Loop functionality coming soon!")
+        """Loop button."""
+        guild = interaction.guild
+        if not guild:
+            await self.handle_interaction(interaction, "❌ No guild found!")
+            return
+        
+        player = get_player(guild)
+        player.loop = not player.loop
+        
+        status = "enabled" if player.loop else "disabled"
+        await self.handle_interaction(interaction, f"🔁 Loop {status}!")
     
     @discord.ui.button(emoji="🛑", style=discord.ButtonStyle.danger, custom_id="music_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_interaction(interaction, "🛑 Stop functionality coming soon!")
+        """Stop button."""
+        guild = interaction.guild
+        if not guild:
+            await self.handle_interaction(interaction, "❌ No guild found!")
+            return
+        
+        player = get_player(guild)
+        if not player.current_track:
+            await self.handle_interaction(interaction, "❌ No track currently playing!")
+            return
+        
+        player.stop()
+        await self.handle_interaction(interaction, "🛑 Playback stopped!")
 
 # ============================================================================
 # EMBED CREATION
@@ -765,7 +857,8 @@ async def play_track(ctx: Union[commands.Context, discord.Interaction], url: str
             
             # Get or create player
             player = get_player(guild)
-            player.current_track = url
+            player.current_track = info
+            player.voice_client = voice_client
             player.reset_state()
             
             # Play audio
@@ -784,6 +877,11 @@ async def play_track(ctx: Union[commands.Context, discord.Interaction], url: str
             embed = await create_player_embed(info, user, player)
             if msg_handler:
                 await msg_handler.send(embed=embed)
+            
+            # Start progress updates
+            if player.progress_task and not player.progress_task.done():
+                player.progress_task.cancel()
+            player.progress_task = asyncio.create_task(update_progress(ctx, player))
             
             log("Track started successfully")
             
@@ -815,10 +913,30 @@ async def play_next(ctx: Union[commands.Context, discord.Interaction]) -> None:
     next_track = player.get_next_track()
     
     if next_track:
-        await play_track(ctx, next_track)
+        await play_track(ctx, next_track['webpage_url'])
     else:
         player.stop()
         log("No more tracks in queue")
+
+async def update_progress(ctx: Union[commands.Context, discord.Interaction], player: GuildPlayer) -> None:
+    """Update progress bar periodically."""
+    try:
+        while player.is_playing and not player.is_paused:
+            await asyncio.sleep(5)  # Update every 5 seconds
+            
+            if player.player_message and player.current_track:
+                try:
+                    embed = await create_player_embed(player.current_track, 
+                                                    getattr(ctx, 'author', None) or getattr(ctx, 'user', None), 
+                                                    player)
+                    await player.player_message.edit(embed=embed)
+                except Exception as e:
+                    log(f"Error updating progress: {e}", "WARNING")
+                    break
+    except asyncio.CancelledError:
+        log("Progress update task cancelled")
+    except Exception as e:
+        log(f"Error in progress update: {e}", "ERROR")
 
 # ============================================================================
 # COMMANDS
@@ -845,6 +963,117 @@ async def play_command(interaction: discord.Interaction, query: str):
     except Exception as e:
         log(f"Error in play command: {e}", "ERROR")
         await msg_handler.send(f"❌ Error: {str(e)}")
+
+@bot.tree.command(name="skip", description="Skip the current track")
+async def skip_command(interaction: discord.Interaction):
+    """Skip command handler."""
+    log("Skip command received")
+    
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message("❌ No guild found!", ephemeral=True)
+        return
+    
+    player = get_player(guild)
+    if not player.current_track:
+        await interaction.response.send_message("❌ No track currently playing!", ephemeral=True)
+        return
+    
+    player.skip()
+    await interaction.response.send_message("⏭️ Track skipped!")
+
+@bot.tree.command(name="stop", description="Stop playback and clear queue")
+async def stop_command(interaction: discord.Interaction):
+    """Stop command handler."""
+    log("Stop command received")
+    
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message("❌ No guild found!", ephemeral=True)
+        return
+    
+    player = get_player(guild)
+    if not player.current_track:
+        await interaction.response.send_message("❌ No track currently playing!", ephemeral=True)
+        return
+    
+    player.stop()
+    player.queue.clear()
+    await interaction.response.send_message("🛑 Playback stopped and queue cleared!")
+
+@bot.tree.command(name="queue", description="Show the current queue")
+async def queue_command(interaction: discord.Interaction):
+    """Queue command handler."""
+    log("Queue command received")
+    
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message("❌ No guild found!", ephemeral=True)
+        return
+    
+    player = get_player(guild)
+    queue_display = player.get_queue_display()
+    
+    embed = discord.Embed(
+        title="📋 Music Queue",
+        description=queue_display,
+        color=0x00ff00
+    )
+    
+    if player.current_track:
+        embed.add_field(
+            name="🎵 Now Playing",
+            value=f"**{player.current_track.get('title', 'Unknown')}**\n"
+                  f"⏱️ {format_time(player.get_elapsed_time())} / {format_time(player.current_track.get('duration', 0))}",
+            inline=False
+        )
+    
+    embed.set_footer(text=f"Total tracks: {len(player.queue)}")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="pause", description="Pause the current track")
+async def pause_command(interaction: discord.Interaction):
+    """Pause command handler."""
+    log("Pause command received")
+    
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message("❌ No guild found!", ephemeral=True)
+        return
+    
+    player = get_player(guild)
+    if not player.current_track:
+        await interaction.response.send_message("❌ No track currently playing!", ephemeral=True)
+        return
+    
+    if player.is_paused:
+        await interaction.response.send_message("❌ Track is already paused!", ephemeral=True)
+        return
+    
+    player.pause()
+    await interaction.response.send_message("⏸️ Playback paused!")
+
+@bot.tree.command(name="resume", description="Resume the current track")
+async def resume_command(interaction: discord.Interaction):
+    """Resume command handler."""
+    log("Resume command received")
+    
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message("❌ No guild found!", ephemeral=True)
+        return
+    
+    player = get_player(guild)
+    if not player.current_track:
+        await interaction.response.send_message("❌ No track currently playing!", ephemeral=True)
+        return
+    
+    if not player.is_paused:
+        await interaction.response.send_message("❌ Track is not paused!", ephemeral=True)
+        return
+    
+    player.resume()
+    await interaction.response.send_message("▶️ Playback resumed!")
 
 async def search_and_play(ctx: Union[commands.Context, discord.Interaction], query: str, 
                          msg_handler: Optional[MessageHandler] = None) -> None:
@@ -875,6 +1104,21 @@ async def search_and_play(ctx: Union[commands.Context, discord.Interaction], que
             if msg_handler:
                 await msg_handler.send(f"❌ Video is too long! Maximum duration is {Config.MAX_VIDEO_DURATION // 60} minutes.")
             return
+        
+        # Check if already playing
+        guild = getattr(ctx, 'guild', None) or getattr(ctx, 'guild_id', None)
+        if guild:
+            player = get_player(guild)
+            if player.is_playing:
+                # Add to queue
+                player.add_to_queue(best_entry)
+                if msg_handler:
+                    await msg_handler.send(
+                        f"🎵 Added **[{best_entry.get('title', 'Unknown')}]({best_entry.get('webpage_url', '')})** to the queue.\n"
+                        f"👁️ {int(best_entry.get('view_count', 0)):,} views • "
+                        f"⏱️ {format_time(best_entry.get('duration', 0))}"
+                    )
+                return
         
         # Play the track
         await play_track(ctx, best_entry['webpage_url'], msg_handler)
