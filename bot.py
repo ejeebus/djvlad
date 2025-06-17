@@ -1856,8 +1856,8 @@ if __name__ == "__main__":
             sys.exit(1)
         
         # Validate token format (basic check)
-        if not token.startswith("MTA") or len(token) < 50:
-            print("❌ Invalid Discord token format")
+        if len(token) < 50:
+            print("❌ Discord token appears to be too short")
             sys.exit(1)
         
         print("🔑 Token validation passed")
