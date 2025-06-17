@@ -49,8 +49,15 @@ def get_cookies_content():
             print("Cookie content is empty")
             return None
             
-        # Check for required cookie fields - only check for essential ones
-        required_fields = ['youtube.com', 'VISITOR_INFO1_LIVE']
+        # Check for required cookie fields - expanded list
+        required_fields = [
+            'youtube.com',
+            'VISITOR_INFO1_LIVE',
+            'LOGIN_INFO',
+            'SID',
+            'HSID',
+            'SSID'
+        ]
         found_fields = []
         missing_fields = []
         
@@ -64,12 +71,16 @@ def get_cookies_content():
         print(f"Found cookie fields: {found_fields}")
         if missing_fields:
             print(f"Missing cookie fields: {missing_fields}")
-            # Don't return None here, as some fields might be optional
+            print("Warning: Missing some recommended cookie fields")
         
         # Check if we have at least the basic required fields
         if 'youtube.com' not in cookies_content and 'www.youtube.com' not in cookies_content:
             print("No YouTube domain cookies found")
             return None
+            
+        # Print first few characters of cookie content for debugging (safely)
+        cookie_preview = cookies_content[:100].replace('\n', '\\n')
+        print(f"Cookie content preview: {cookie_preview}...")
             
         print("Cookie validation successful")
         return cookies_content
@@ -134,7 +145,30 @@ ydl_opts = {
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'mp3',
         'preferredquality': '192',
-    }]
+    }],
+    # Add additional options for better handling of YouTube's bot detection
+    'extractor_args': {
+        'youtube': {
+            'skip': ['dash', 'hls'],  # Skip formats that might trigger bot detection
+            'player_client': ['android', 'web'],  # Try different player clients
+            'player_skip': ['js', 'configs', 'webpage'],  # Skip unnecessary player components
+        }
+    },
+    'socket_timeout': 30,  # Increase socket timeout
+    'retries': 10,  # Increase retry attempts
+    'fragment_retries': 10,  # Increase fragment retry attempts
+    'extractor_retries': 10,  # Increase extractor retry attempts
+    'ignoreerrors': True,  # Ignore errors and continue
+    'no_warnings': False,  # Show warnings for debugging
+    'verbose': True,  # Enable verbose output
+    'cookiesfrombrowser': None,  # Don't use browser cookies
+    'cookiefile': None,  # Will be set dynamically
+    'http_headers': {  # Add headers to look more like a browser
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-us,en;q=0.5',
+        'Sec-Fetch-Mode': 'navigate',
+    }
 }
 
 # Define FFmpeg options globally
@@ -573,6 +607,8 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
     temp_cookies_file = None
     progress_task = None
     cookie_warning_shown = False
+    max_retries = 3
+    retry_delay = 2
 
     try:
         print(f"\n=== Starting play_track ===")
@@ -625,27 +661,37 @@ async def play_track(ctx: commands.Context, url: str, msg_handler=None):
             channel = ctx.author.voice.channel
             print(f"Connecting to voice channel: {channel.name}")
             
-            try:
-                # Connect with optimized settings
-                voice_client = await channel.connect(
-                    timeout=60,  # Increased timeout
-                    reconnect=True  # Enable reconnection
-                )
-                
-                # Configure voice client for better stability
-                voice_client.recv_audio = False  # Disable audio receiving
-                voice_client.send_audio = True   # Enable audio sending
-                
-                # Set voice state
-                await ctx.guild.change_voice_state(
-                    channel=voice_client.channel,
-                    self_deaf=True,  # Deafen the bot
-                    self_mute=False  # Don't mute the bot
-                )
-                print("Connected to voice channel with optimized settings")
-            except Exception as e:
-                print(f"Error connecting to voice channel: {e}")
-                raise ValueError(f"Failed to connect to voice channel: {e}")
+            # Retry logic for voice connection
+            for attempt in range(max_retries):
+                try:
+                    # Connect with optimized settings
+                    voice_client = await channel.connect(
+                        timeout=30,  # Reduced timeout
+                        reconnect=True,  # Enable reconnection
+                        self_deaf=True,  # Deafen the bot
+                        self_mute=False  # Don't mute the bot
+                    )
+                    
+                    # Configure voice client for better stability
+                    voice_client.recv_audio = False  # Disable audio receiving
+                    voice_client.send_audio = True   # Enable audio sending
+                    
+                    # Set voice state
+                    await ctx.guild.change_voice_state(
+                        channel=voice_client.channel,
+                        self_deaf=True,  # Deafen the bot
+                        self_mute=False  # Don't mute the bot
+                    )
+                    print("Connected to voice channel with optimized settings")
+                    break
+                except Exception as e:
+                    print(f"Connection attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        print(f"Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        raise ValueError(f"Failed to connect to voice channel after {max_retries} attempts: {e}")
 
         # Create a copy of ydl_opts for this specific request
         current_ydl_opts = ydl_opts.copy()
