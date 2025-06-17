@@ -994,6 +994,16 @@ async def play_track(ctx, url: str, msg_handler=None):
         
         print(f"Video info extracted successfully with {strategy['name']}")
         
+        # Check if voice client is still connected after extraction
+        if not voice_client or not voice_client.is_connected():
+            print("Voice client disconnected during extraction, attempting to reconnect...")
+            try:
+                voice_client = await channel.connect(timeout=30.0, self_deaf=True)
+                print("Successfully reconnected to voice channel")
+            except Exception as e:
+                print(f"Failed to reconnect to voice channel: {e}")
+                raise ValueError(f"Voice connection lost and could not reconnect: {str(e)}")
+        
         # Validate the info dictionary
         if not info:
             print("No info returned from yt-dlp")
@@ -1050,6 +1060,16 @@ async def play_track(ctx, url: str, msg_handler=None):
             source.packet_size = 960  # Standard packet size
             
             print("Audio source created successfully")
+            
+            # Check if voice client is still connected before playing
+            if not voice_client or not voice_client.is_connected():
+                print("Voice client disconnected during extraction, attempting to reconnect...")
+                try:
+                    voice_client = await channel.connect(timeout=30.0, self_deaf=True)
+                    print("Successfully reconnected to voice channel")
+                except Exception as e:
+                    print(f"Failed to reconnect to voice channel: {e}")
+                    raise ValueError(f"Voice connection lost and could not reconnect: {str(e)}")
             
             # Start playback
             print("Starting playback...")
