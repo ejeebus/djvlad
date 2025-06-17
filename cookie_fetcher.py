@@ -260,7 +260,7 @@ def main():
         return False
     
     # Create fetcher and get cookies
-    fetcher = YouTubeCookieFetcher(headless=True)
+    fetcher = YouTubeCookieFetcher(headless=False)
     success = fetcher.fetch_cookies(email, password)
     
     if success:
