@@ -17,6 +17,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from dotenv import load_dotenv
+load_dotenv()
 
 class YouTubeCookieFetcher:
     def __init__(self, headless=True):
