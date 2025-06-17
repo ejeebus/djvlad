@@ -814,11 +814,48 @@ async def play_track(ctx, url: str, msg_handler=None):
         if temp_cookies_file:
             ydl_opts['cookiefile'] = temp_cookies_file
 
+        # Create enhanced yt-dlp options for direct video extraction
+        enhanced_ydl_opts = ydl_opts.copy()
+        enhanced_ydl_opts.update({
+            'quiet': True,  # Reduce logging to avoid detection
+            'no_warnings': True,  # Suppress warnings
+            'extract_flat': False,  # We want full extraction for direct videos
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+            },
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_client': ['web'],  # Try web client first
+                    'player_skip': ['js', 'configs'],
+                    'player_params': {
+                        'hl': 'en',
+                        'gl': 'US',
+                    }
+                }
+            },
+            'socket_timeout': 60,  # Increase timeout
+            'retries': 15,  # More retries
+            'fragment_retries': 15,
+            'extractor_retries': 15,
+        })
+
         # Extract video information
         print(f"\n=== Extracting video info for: {url} ===")
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                print("Created yt-dlp instance")
+            with yt_dlp.YoutubeDL(enhanced_ydl_opts) as ydl:
+                print("Created enhanced yt-dlp instance for direct video extraction")
                 info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
                 print(f"Video info extracted successfully")
         except yt_dlp.utils.DownloadError as e:
@@ -826,7 +863,29 @@ async def play_track(ctx, url: str, msg_handler=None):
             if "Video unavailable" in str(e):
                 raise ValueError("This video is unavailable or private")
             elif "Sign in" in str(e):
-                raise ValueError("This video requires authentication")
+                print("YouTube bot detection triggered, trying alternative extraction method...")
+                # Try alternative extraction with different options
+                try:
+                    fallback_opts = enhanced_ydl_opts.copy()
+                    fallback_opts.update({
+                        'player_client': ['android'],  # Try android client
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Accept-Encoding': 'gzip, deflate',
+                            'Connection': 'keep-alive',
+                            'Upgrade-Insecure-Requests': '1',
+                        }
+                    })
+                    
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
+                        print("Trying fallback extraction with android client...")
+                        info = await bot.loop.run_in_executor(None, lambda: ydl2.extract_info(url, download=False))
+                        print("Fallback extraction successful")
+                except Exception as fallback_error:
+                    print(f"Fallback extraction also failed: {fallback_error}")
+                    raise ValueError("This video requires authentication and cannot be accessed")
             elif "Age restricted" in str(e):
                 raise ValueError("This video is age-restricted and requires cookies")
             else:
@@ -959,7 +1018,7 @@ async def play_track(ctx, url: str, msg_handler=None):
                 await msg_handler.send(f"❌ Error playing track: {error_msg}")
             else:
                 # Fallback to direct message send if no msg_handler
-                if hasattr(ctx, 'channel') and ctx.channel:
+                if isinstance(ctx, commands.Context):
                     await ctx.channel.send(f"❌ Error playing track: {error_msg}")
                 else:
                     await ctx.followup.send(f"❌ Error playing track: {error_msg}", ephemeral=True)
@@ -967,6 +1026,9 @@ async def play_track(ctx, url: str, msg_handler=None):
             print(f"Failed to send error message: {send_error}")
             print(f"Send error type: {type(send_error)}")
             print(f"Send error traceback: {traceback.format_exc()}")
+            if msg_handler:
+                print("\n=== Final Message Handler State ===")
+                print(msg_handler.get_debug_info())
 
     finally:
         # Clean up temporary cookies file
@@ -1255,106 +1317,148 @@ async def play_command(interaction: discord.Interaction, query: str):
         if temp_cookies_file:
             ydl_opts['cookiefile'] = temp_cookies_file
 
+        # Create enhanced yt-dlp options for search
+        enhanced_ydl_opts = ydl_opts.copy()
+        enhanced_ydl_opts.update({
+            'quiet': True,  # Reduce logging to avoid detection
+            'no_warnings': True,  # Suppress warnings
+            'extract_flat': True,  # We want flat extraction for search
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com',
+            },
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_client': ['web'],  # Try web client first
+                    'player_skip': ['js', 'configs'],
+                    'player_params': {
+                        'hl': 'en',
+                        'gl': 'US',
+                    }
+                }
+            },
+            'socket_timeout': 60,  # Increase timeout
+            'retries': 15,  # More retries
+            'fragment_retries': 15,
+            'extractor_retries': 15,
+        })
+
+        # Add cookies file to yt-dlp options if available
+        if temp_cookies_file:
+            enhanced_ydl_opts['cookiefile'] = temp_cookies_file
+
         # Extract video information
-        print(f"\n=== Extracting video info for: {query} ===")
-        
-        async def try_extract_info(query: str, is_search: bool = False) -> dict:
-            """Helper function to try extracting video info with better error handling."""
-            try:
-                print(f"\n=== Starting search for: {query} ===")
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    print("Created yt-dlp instance")
-                    try:
-                        info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
-                        print(f"Raw search results type: {type(info)}")
-                        print(f"Raw search results keys: {info.keys() if isinstance(info, dict) else 'Not a dict'}")
-                        
-                        if not info:
-                            print("No info returned from yt-dlp")
-                            raise ValueError("No video information found")
+        print(f"\n=== Starting search for: {query} ===")
+        search_url = f"ytsearch:{query}"
+        try:
+            with yt_dlp.YoutubeDL(enhanced_ydl_opts) as ydl:
+                print("Created enhanced yt-dlp instance for search")
+                info = await bot.loop.run_in_executor(None, lambda: ydl.extract_info(search_url, download=False))
+                print(f"Search completed successfully")
+        except yt_dlp.utils.DownloadError as e:
+            print(f"yt-dlp DownloadError during search: {str(e)}")
+            if "Video unavailable" in str(e):
+                raise ValueError("Search failed - videos unavailable")
+            elif "Sign in" in str(e):
+                print("YouTube bot detection during search, trying alternative method...")
+                # Try alternative search with different options
+                try:
+                    fallback_opts = enhanced_ydl_opts.copy()
+                    fallback_opts.update({
+                        'player_client': ['android'],  # Try android client
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Accept-Encoding': 'gzip, deflate',
+                            'Connection': 'keep-alive',
+                            'Upgrade-Insecure-Requests': '1',
+                        }
+                    })
+                    
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
+                        print("Trying fallback search with android client...")
+                        info = await bot.loop.run_in_executor(None, lambda: ydl2.extract_info(search_url, download=False))
+                        print("Fallback search successful")
+                except Exception as fallback_error:
+                    print(f"Fallback search also failed: {fallback_error}")
+                    raise ValueError("Search failed due to YouTube bot detection")
+            else:
+                raise ValueError(f"Search error: {str(e)}")
+        except yt_dlp.utils.ExtractorError as e:
+            print(f"yt-dlp ExtractorError during search: {str(e)}")
+            raise ValueError(f"Could not perform search: {str(e)}")
+        except Exception as e:
+            print(f"Error during yt-dlp search: {str(e)}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            raise ValueError(f"Error during search: {str(e)}")
 
-                        # For search results, validate entries
-                        if 'entries' in info:
-                            print(f"Found {len(info['entries'])} entries in search results")
-                            if not info['entries']:
-                                print("Empty entries list")
-                                raise ValueError("No search results found")
-                            
-                            # Filter and validate entries with detailed debug info
-                            valid_entries = []
-                            for i, entry in enumerate(info['entries']):
-                                print(f"\nProcessing entry {i + 1}:")
-                                print(f"Entry type: {type(entry)}")
-                                print(f"Entry keys: {entry.keys() if isinstance(entry, dict) else 'Not a dict'}")
-                                print(f"Title: {entry.get('title', 'NO TITLE')}")
-                                print(f"Views: {entry.get('view_count', 'NO VIEWS')}")
-                                print(f"Duration: {entry.get('duration', 'NO DURATION')}")
-                                print(f"URL: {entry.get('url', 'NO URL')}")
-                                
-                                if entry and isinstance(entry, dict):
-                                    # For search results, use 'url' instead of 'webpage_url'
-                                    if 'url' in entry and 'title' in entry:
-                                        # Add webpage_url field for consistency
-                                        entry['webpage_url'] = entry['url']
-                                        valid_entries.append(entry)
-                                        print("✓ Entry is valid")
-                                    else:
-                                        print("✗ Entry filtered out - missing required fields")
-                                        print(f"Missing fields: {[k for k in ['url', 'title'] if k not in entry]}")
-                                else:
-                                    print(f"✗ Entry filtered out - invalid type: {type(entry)}")
-                            
-                            print(f"\nFound {len(valid_entries)} valid entries after filtering")
-                            if not valid_entries:
-                                print("No valid entries found after filtering")
-                                raise ValueError("No valid search results found")
-                            info['entries'] = valid_entries
-                        # For single videos, validate required fields
-                        elif not all(key in info for key in ['url', 'title']):
-                            print(f"Single video missing required fields: {info}")
-                            raise ValueError("Incomplete video information")
-                        else:
-                            # Add webpage_url field for consistency
-                            info['webpage_url'] = info['url']
-                        
-                        return info
-                    except ValueError:
-                        # Re-raise ValueError as-is (these are our custom error messages)
-                        raise
-                    except Exception as e:
-                        print(f"Error in try_extract_info: {str(e)}")
-                        print(f"Error type: {type(e)}")
-                        import traceback
-                        print(f"Traceback: {traceback.format_exc()}")
-                        raise ValueError(f"Error extracting video info: {str(e)}")
-            except Exception as e:
-                print(f"Error in try_extract_info: {str(e)}")
-                raise
-
-        # Try different search strategies with debug logging
-        info = None
-        search_strategies = [
-            query,  # Try original query first
-            f"{query} music",  # Try with music
-            f"{query} audio",  # Try with audio
-            f"{query} official",  # Try with official
-            f"{query} lyrics"  # Try with lyrics as last resort
-        ]
+        # Process search results
+        print(f"Raw search results type: {type(info)}")
+        print(f"Raw search results keys: {info.keys() if isinstance(info, dict) else 'Not a dict'}")
         
-        # Update the search strategies to use our new message handler
-        for search_query in search_strategies:
-            try:
-                print(f"\n=== Trying search strategy: {search_query} ===")
-                info = await try_extract_info(search_query, is_search=True)
-                if info and ('entries' in info and info['entries'] or 'webpage_url' in info):
-                    print(f"✓ Found valid result with strategy: {search_query}")
-                    break
-            except ValueError as e:
-                print(f"✗ Strategy {search_query} failed: {str(e)}")
-                if search_query == search_strategies[-1]:
-                    await msg_handler.send(f"❌ {str(e)}")
-                    return
-                continue
+        if not info:
+            print("No info returned from yt-dlp")
+            raise ValueError("No video information found")
+
+        # For search results, validate entries
+        if 'entries' in info:
+            print(f"Found {len(info['entries'])} entries in search results")
+            if not info['entries']:
+                print("Empty entries list")
+                raise ValueError("No search results found")
+            
+            # Filter and validate entries with detailed debug info
+            valid_entries = []
+            for i, entry in enumerate(info['entries']):
+                print(f"\nProcessing entry {i + 1}:")
+                print(f"Entry type: {type(entry)}")
+                print(f"Entry keys: {entry.keys() if isinstance(entry, dict) else 'Not a dict'}")
+                print(f"Title: {entry.get('title', 'NO TITLE')}")
+                print(f"Views: {entry.get('view_count', 'NO VIEWS')}")
+                print(f"Duration: {entry.get('duration', 'NO DURATION')}")
+                print(f"URL: {entry.get('url', 'NO URL')}")
+                
+                if entry and isinstance(entry, dict):
+                    # For search results, use 'url' instead of 'webpage_url'
+                    if 'url' in entry and 'title' in entry:
+                        # Add webpage_url field for consistency
+                        entry['webpage_url'] = entry['url']
+                        valid_entries.append(entry)
+                        print("✓ Entry is valid")
+                    else:
+                        print("✗ Entry filtered out - missing required fields")
+                        print(f"Missing fields: {[k for k in ['url', 'title'] if k not in entry]}")
+                else:
+                    print(f"✗ Entry filtered out - invalid type: {type(entry)}")
+            
+            print(f"\nFound {len(valid_entries)} valid entries after filtering")
+            if not valid_entries:
+                print("No valid entries found after filtering")
+                raise ValueError("No valid search results found")
+            info['entries'] = valid_entries
+        # For single videos, validate required fields
+        elif not all(key in info for key in ['url', 'title']):
+            print(f"Single video missing required fields: {info}")
+            raise ValueError("Incomplete video information")
+        else:
+            # Add webpage_url field for consistency
+            info['webpage_url'] = info['url']
 
         print("\n=== Processing search results ===")
         if 'entries' in info:
