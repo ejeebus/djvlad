@@ -9,7 +9,6 @@ services:
     python setup_ffmpeg.py
     pip install -r requirements.txt
   run_command: python bot.py
-  http_port: 8080
   instance_count: 1
   instance_size_slug: basic-xxs
   envs:
