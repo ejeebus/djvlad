@@ -223,7 +223,6 @@ ydl_opts = {
     'audioquality': '192K',  # Audio quality
     'outtmpl': '%(title)s.%(ext)s',  # Output template
     'restrictfilenames': True,  # Restrict filenames
-    'noplaylist': True,  # Don't extract playlists
     'age_limit': 21,  # Age limit
     'socket_timeout': 30,  # Increased socket timeout
     'retries': 10,  # Increase retry attempts
@@ -499,6 +498,7 @@ class MusicControls(discord.ui.View):
 
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.blurple, custom_id="music_skip")
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = get_player(interaction.guild)
         voice_client = interaction.guild.voice_client
         if voice_client and voice_client.is_playing():
             voice_client.stop()  # This will trigger play_next
@@ -739,6 +739,85 @@ async def play_next(ctx):
             print(f"Failed to send error message: {send_error}")
             print(f"Send error type: {type(send_error)}")
             print(f"Send error traceback: {traceback.format_exc()}")
+
+# --- Anti-Bot Detection ---
+class AntiBotDetection:
+    """Enhanced anti-bot detection measures."""
+
+    @staticmethod
+    def get_rotating_user_agents():
+        """Get a list of rotating user agents."""
+        return [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1',
+            'Mozilla/5.0 (iPad; CPU OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1',
+        ]
+
+    @staticmethod
+    def get_enhanced_headers(user_agent=None):
+        """Get enhanced headers that look more human-like."""
+        if not user_agent:
+            user_agent = AntiBotDetection.get_rotating_user_agents()[0]
+
+        return {
+            'User-Agent': user_agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+        }
+
+# --- yt-dlp updater ---
+def update_yt_dlp():
+    """Update yt-dlp to the latest version."""
+    try:
+        print("🔧 Checking yt-dlp version...")
+        result = subprocess.run([sys.executable, "-m", "pip", "show", "yt-dlp"],
+                              capture_output=True, text=True, timeout=30)
+
+        if result.returncode == 0:
+            print("✅ yt-dlp is installed")
+            print("🔄 Updating yt-dlp to latest version...")
+            update_result = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+                                         capture_output=True, text=True, timeout=120)
+
+            if update_result.returncode == 0:
+                print("✅ yt-dlp updated successfully")
+                version_result = subprocess.run([sys.executable, "-m", "yt-dlp", "--version"],
+                                              capture_output=True, text=True, timeout=10)
+                if version_result.returncode == 0:
+                    print(f"📦 yt-dlp version: {version_result.stdout.strip()}")
+            else:
+                print(f"⚠️ Failed to update yt-dlp: {update_result.stderr}")
+        else:
+            print("❌ yt-dlp not found, installing...")
+            install_result = subprocess.run([sys.executable, "-m", "pip", "install", "yt-dlp"],
+                                          capture_output=True, text=True, timeout=120)
+
+            if install_result.returncode == 0:
+                print("✅ yt-dlp installed successfully")
+            else:
+                print(f"❌ Failed to install yt-dlp: {install_result.stderr}")
+
+    except subprocess.TimeoutExpired:
+        print("⚠️ Timeout while updating yt-dlp")
+    except Exception as e:
+        print(f"⚠️ Error updating yt-dlp: {e}")
 
 async def play_track(ctx, url: str, msg_handler=None):
     """Plays a single track from a URL."""
@@ -1256,12 +1335,13 @@ async def play_track(ctx, url: str, msg_handler=None):
                 except Exception as e:
                     print(f"Error in playback completion callback: {e}")
             
-            # Use the bot's event loop to schedule the callback
+            # Schedule from the audio thread into the event loop thread-safely
             def after_callback(error):
                 if error:
                     print(f"Playback error: {error}")
-                # Schedule the async callback in the bot's event loop
-                asyncio.create_task(playback_complete_callback(error))
+                bot.loop.call_soon_threadsafe(
+                    bot.loop.create_task, playback_complete_callback(error)
+                )
             
             voice_client.play(source, after=after_callback)
             print("Playback started successfully")
@@ -2044,8 +2124,9 @@ if __name__ == "__main__":
             sys.exit(1)
         
         print("🔑 Token validation passed")
+        update_yt_dlp()
         print("🚀 Starting bot...")
-        
+
         bot.run(token)
     except KeyboardInterrupt:
         print("\n⚠️ Keyboard interrupt received. Shutting down...")
@@ -2072,86 +2153,3 @@ if __name__ == "__main__":
         print("✅ Bot process terminated.")
         sys.exit(0)
 
-# Check and update yt-dlp version
-def update_yt_dlp():
-    """Update yt-dlp to the latest version."""
-    try:
-        print("🔧 Checking yt-dlp version...")
-        result = subprocess.run([sys.executable, "-m", "pip", "show", "yt-dlp"], 
-                              capture_output=True, text=True, timeout=30)
-        
-        if result.returncode == 0:
-            print("✅ yt-dlp is installed")
-            # Try to update to latest version
-            print("🔄 Updating yt-dlp to latest version...")
-            update_result = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], 
-                                         capture_output=True, text=True, timeout=120)
-            
-            if update_result.returncode == 0:
-                print("✅ yt-dlp updated successfully")
-                # Show the new version
-                version_result = subprocess.run([sys.executable, "-m", "yt-dlp", "--version"], 
-                                              capture_output=True, text=True, timeout=10)
-                if version_result.returncode == 0:
-                    print(f"📦 yt-dlp version: {version_result.stdout.strip()}")
-            else:
-                print(f"⚠️ Failed to update yt-dlp: {update_result.stderr}")
-        else:
-            print("❌ yt-dlp not found, installing...")
-            install_result = subprocess.run([sys.executable, "-m", "pip", "install", "yt-dlp"], 
-                                          capture_output=True, text=True, timeout=120)
-            
-            if install_result.returncode == 0:
-                print("✅ yt-dlp installed successfully")
-            else:
-                print(f"❌ Failed to install yt-dlp: {install_result.stderr}")
-                
-    except subprocess.TimeoutExpired:
-        print("⚠️ Timeout while updating yt-dlp")
-    except Exception as e:
-        print(f"⚠️ Error updating yt-dlp: {e}")
-
-# Update yt-dlp on startup
-update_yt_dlp()
-
-# --- Anti-Bot Detection ---
-class AntiBotDetection:
-    """Enhanced anti-bot detection measures."""
-    
-    @staticmethod
-    def get_rotating_user_agents():
-        """Get a list of rotating user agents."""
-        return [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1',
-            'Mozilla/5.0 (iPad; CPU OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1',
-        ]
-    
-    @staticmethod
-    def get_enhanced_headers(user_agent=None):
-        """Get enhanced headers that look more human-like."""
-        if not user_agent:
-            user_agent = AntiBotDetection.get_rotating_user_agents()[0]
-        
-        return {
-            'User-Agent': user_agent,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Referer': 'https://www.youtube.com/',
-            'Origin': 'https://www.youtube.com',
-        }
